@@ -16,7 +16,7 @@ public class SwiftArLidarPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     switch call.method {
     case "initializeAR":
       // TODO: initialize your AR engine
-      result(nil)
+      result(true)
     case "updateCuboidDimensions":
       guard let args = call.arguments as? [String: Any],
             let width = args["width"] as? Double,

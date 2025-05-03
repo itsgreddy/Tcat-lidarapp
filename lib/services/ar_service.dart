@@ -6,15 +6,16 @@ class ARService {
   static const EventChannel _eventChannel = EventChannel('com.tcat/ar_lidar_events');
 
   // Initialize AR session
-  Future<bool> initializeAR() async {
-    try {
-      final bool result = await _channel.invokeMethod('initializeAR');
-      return result;
-    } on PlatformException catch (e) {
-      print("Failed to initialize AR: ${e.message}");
-      return false;
+    Future<bool> initializeAR() async {
+      try {
+        final result = await _channel.invokeMethod('initializeAR');
+        return result == true; // Ensures only `true` is returned, otherwise `false`
+      } on PlatformException catch (e) {
+        print("Failed to initialize AR: ${e.message}");
+        return false;
+      }
     }
-  }
+
 
   // Update cuboid dimensions
   Future<void> updateCuboidDimensions(CuboidModel model) async {

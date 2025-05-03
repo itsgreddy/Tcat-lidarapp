@@ -34,7 +34,7 @@ LiDAR-based accessibility scanner for mapping indoor obstacles and measuring cle
 ### Installation
 
 ```bash
-git clone https://github.com/your-org/tcat.git
+git clone https://github.com/your-org/Tcat-lidarapp.git
 cd tcat
 flutter pub get
 ```
