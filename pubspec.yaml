@@ -1,0 +1,34 @@
+name: tcat
+description: LiDAR-based accessibility scanner
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=2.19.0 <3.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  
+  # State management - specify exact version to avoid conflicts
+  provider: ^6.0.5
+  
+  # For responsive UI
+  flutter_screenutil: ^5.8.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
+
+plugin:
+  platforms:
+    android:
+      package: com.tcat.ar_lidar
+      pluginClass: ArLidarPlugin
+    ios:
+      pluginClass: SwiftArLidarPlugin
