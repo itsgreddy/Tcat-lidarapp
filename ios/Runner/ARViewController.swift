@@ -51,6 +51,15 @@ class ARViewController: UIViewController {
         return s
     }()
 
+    private var isLocked = false
+
+    private let lockButton: UIButton = {
+        let b = UIButton(type: .system)
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.setTitle("Lock", for: .normal)
+        return b
+    }()
+
     override func viewDidLoad() {
         super.viewDidLoad()
         setupARView()
@@ -75,6 +84,10 @@ class ARViewController: UIViewController {
             arView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             arView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+        
+        // enable debug overlays for LiDAR mesh
+        arView.debugOptions.insert(.showSceneUnderstanding)
+        arView.debugOptions.insert(.showFeaturePoints)
     }
     
     private func setupGestures() {
@@ -114,6 +127,14 @@ class ARViewController: UIViewController {
         [widthSlider, heightSlider, depthSlider].forEach {
             $0.addTarget(self, action: #selector(sliderChanged(_:)), for: .valueChanged)
         }
+
+        // add lock/unlock button
+        view.addSubview(lockButton)
+        NSLayoutConstraint.activate([
+            lockButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            lockButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
+        ])
+        lockButton.addTarget(self, action: #selector(toggleLock(_:)), for: .touchUpInside)
     }
 
     private func labeledSlider(_ label: String, _ slider: UISlider) -> UIView {
@@ -132,6 +153,17 @@ class ARViewController: UIViewController {
             height: heightSlider.value,
             depth: depthSlider.value
         )
+    }
+
+    @objc private func toggleLock(_ sender: UIButton) {
+        if isLocked {
+            arManager.unlockCuboid()
+            sender.setTitle("Lock", for: .normal)
+        } else {
+            arManager.lockCuboid()
+            sender.setTitle("Unlock", for: .normal)
+        }
+        isLocked.toggle()
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {

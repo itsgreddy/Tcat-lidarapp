@@ -14,6 +14,8 @@ class ARManager: NSObject {
     private var isIntersecting = false
     private var intersectionCallback: ((Bool) -> Void)?
 
+    private var anchorEntity: AnchorEntity? // track current anchor
+
     private let arConfiguration: ARWorldTrackingConfiguration = {
         let configuration = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
@@ -61,17 +63,56 @@ class ARManager: NSObject {
 
     private func createCuboid() {
         guard let arView = arView else { return }
-
+        // Remove any previous anchor
+        if let existing = anchorEntity {
+            if let entity = cuboidEntity {
+                existing.removeChild(entity)
+            }
+            arView.scene.removeAnchor(existing)
+        }
+        // Build new cuboid
         let boxMesh = MeshResource.generateBox(size: [cuboidWidth, cuboidHeight, cuboidDepth])
         cuboidEntity = ModelEntity(mesh: boxMesh,
                                    materials: [SimpleMaterial(color: .green,
                                                              roughness: 0.3,
                                                              isMetallic: false)])
-        // Anchor to the camera so it moves with the device
-        let anchor = AnchorEntity(.camera)
-        anchor.addChild(cuboidEntity!)
-        cuboidEntity?.setPosition([0, -cuboidHeight/2, -1.5], relativeTo: anchor)
-        arView.scene.addAnchor(anchor)
+        // Anchor to camera by default
+        let camAnchor = AnchorEntity(.camera)
+        camAnchor.addChild(cuboidEntity!)
+        cuboidEntity!.setPosition([0, -cuboidHeight/2, -1.5], relativeTo: camAnchor)
+        arView.scene.addAnchor(camAnchor)
+        anchorEntity = camAnchor
+    }
+
+    // Lock in world space
+    func lockCuboid() {
+        guard let arView = arView,
+              let entity = cuboidEntity,
+              let oldAnchor = anchorEntity else { return }
+        let worldPos = entity.position(relativeTo: nil)
+        oldAnchor.removeChild(entity)
+        arView.scene.removeAnchor(oldAnchor)
+        let worldAnchor = AnchorEntity()
+        worldAnchor.transform.translation = worldPos
+        worldAnchor.addChild(entity)
+        entity.transform = Transform()  // reset local
+        arView.scene.addAnchor(worldAnchor)
+        anchorEntity = worldAnchor
+    }
+
+    // Re‐attach to camera
+    func unlockCuboid() {
+        guard let arView = arView,
+              let entity = cuboidEntity,
+              let oldAnchor = anchorEntity else { return }
+        let worldPos = entity.position(relativeTo: nil)
+        oldAnchor.removeChild(entity)
+        arView.scene.removeAnchor(oldAnchor)
+        let camAnchor = AnchorEntity(.camera)
+        camAnchor.addChild(entity)
+        entity.setPosition(worldPos, relativeTo: camAnchor)
+        arView.scene.addAnchor(camAnchor)
+        anchorEntity = camAnchor
     }
 
     private func checkIntersection() {
