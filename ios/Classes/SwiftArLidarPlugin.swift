@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import ARKit
 
 public class SwiftArLidarPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -15,8 +16,8 @@ public class SwiftArLidarPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "initializeAR":
-      // TODO: initialize your AR engine
-      result(true)
+      // return whether ARKit (and LiDAR) is supported on this device
+      result(ARWorldTrackingConfiguration.isSupported)
     case "updateCuboidDimensions":
       guard let args = call.arguments as? [String: Any],
             let width = args["width"] as? Double,
