@@ -2,82 +2,51 @@
 
 LiDAR-based accessibility scanner for mapping indoor obstacles and measuring clearances.
 
-## Table of Contents
-
-- [Features](#features)  
-- [Getting Started](#getting-started)  
-  - [Prerequisites](#prerequisites)  
-  - [Installation](#installation)  
-  - [Running the App](#running-the-app)  
-- [Architecture](#architecture)  
-- [Permissions](#permissions)  
-- [Contributing](#contributing)  
-- [License](#license)  
-
 ## Features
 
-- Initialize the LiDAR-based AR engine  
-- Measure and update cuboid dimensions in real time  
-- Stream spatial and object-detection events via EventChannel  
-- Responsive UI with Flutter ScreenUtil  
-- State management using Provider  
+- Live LiDAR scanning via ARKit/ARCore plugin  
+- Adjustable cuboid in 3D to model object clearances  
+- Collision detection: red overlay when blocked, green when passable  
+- Lock/unlock cuboid to world vs. camera reference  
+- Flutter UI with sliders for Width/Height/Depth  
+
+## Controls
+
+- Top status bar: 🟩 PASSABLE / 🟥 BLOCKED  
+- Sliders (bottom):  
+  - W: cuboid width (cm)  
+  - H: cuboid height (cm)  
+  - D: cuboid depth (cm)  
+- Lock/Unlock button (top-right): fix cuboid in world space or follow camera  
+- Pan & pinch gestures on AR view to move/scale cuboid  
 
 ## Getting Started
 
-### Prerequisites
-
-- Flutter SDK (>=2.19.0 <3.0.0)  
-- Xcode 12+ (for iOS builds)  
-- Android Studio or SDK (for Android builds)  
-- A LiDAR-equipped iOS device (e.g., iPhone 12 Pro or later)  
-
-### Installation
-
-```bash
-git clone https://github.com/your-org/Tcat-lidarapp.git
-cd tcat
-flutter pub get
-```
-
-### Running the App
-
-- iOS:  
-  ```bash
-  cd ios
-  pod install
-  cd ..
-  flutter run --debug -d ios
-  ```
-- Android:  
-  ```bash
-  flutter run --debug -d android
-  ```
+1. `flutter pub get`  
+2. Connect iOS/Android device with LiDAR/AR support  
+3. `flutter run`  
 
 ## Architecture
 
-- **Dart ↔ Native** communication via  
-  - `MethodChannel('com.tcat/ar_lidar')` for commands  
-  - `EventChannel('com.tcat/ar_lidar_events')` for real-time streams  
-- Plugin code lives under `android/src/.../ArLidarPlugin.kt` and `ios/Classes/SwiftArLidarPlugin.swift`  
-- UI/state management in `lib/` using Provider and ScreenUtil  
+- Flutter UI in `lib/`  
+  - `ARScreen` widget hosts controls and status  
+  - `DimensionSlider`, `CuboidModel`, `ARService`  
+- Native AR plugin  
+  - iOS: `SwiftArLidarPlugin.swift`, `ARManager.swift`  
+  - Android: `ArLidarPlugin.kt`  
+- Channels  
+  - `MethodChannel('com.tcat/ar_lidar')` for init + dimension updates  
+  - `EventChannel('com.tcat/ar_lidar_events')` for collision stream  
 
 ## Permissions
 
-- **iOS**:  
+- iOS:  
   - `NSCameraUsageDescription` in `Info.plist`  
-  - LiDAR access implied by ARKit entitlement  
-- **Android**:  
-  - `CAMERA` permission in `AndroidManifest.xml`  
+  - ARKit + LiDAR entitlement  
 
 ## Contributing
 
-1. Fork the repository  
+1. Fork & clone  
 2. Create a feature branch  
-3. Commit your changes  
-4. Open a pull request  
-
-Please follow the existing lint rules (`analysis_options.yaml`) and write tests where applicable.
-
-## License
-
-MIT © Your Name or Organization
+3. Commit & push  
+4. Open a PR
