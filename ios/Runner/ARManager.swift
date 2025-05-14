@@ -221,9 +221,21 @@ class ARManager: NSObject {
     }
 
     func setPathPoints(start: SIMD3<Float>, goal: SIMD3<Float>) {
+        // Add debug logging to troubleshoot
+        print("ARManager received path points:")
+        print("  - Start: \(start)")
+        print("  - Goal: \(goal)")
+        
         // Check if both points have valid positions
         if start == SIMD3<Float>(0, 0, 0) || goal == SIMD3<Float>(0, 0, 0) {
             print("Warning: Invalid path points (0,0,0)")
+            return
+        }
+        
+        // Additional validation to ensure we don't have NaN values
+        if start.x.isNaN || start.y.isNaN || start.z.isNaN ||
+           goal.x.isNaN || goal.y.isNaN || goal.z.isNaN {
+            print("Warning: Path points contain NaN values")
             return
         }
         
