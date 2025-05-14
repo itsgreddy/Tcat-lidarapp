@@ -25,6 +25,19 @@ class ARService {
       print("Failed to update cuboid dimensions: ${e.message}");
     }
   }
+  
+  // Add method to update cuboid position
+  Future<void> updateCuboidPosition(CuboidModel model) async {
+    try {
+      await _channel.invokeMethod('updateCuboidPosition', {
+        'positionX': model.positionX ?? 0.0,
+        'positionY': model.positionY ?? 0.0,
+        'positionZ': model.positionZ ?? -1.5,
+      });
+    } on PlatformException catch (e) {
+      print("Failed to update cuboid position: ${e.message}");
+    }
+  }
 
   // Stream of intersection events
   Stream<bool> get intersectionStream {

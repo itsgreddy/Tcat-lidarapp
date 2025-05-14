@@ -40,9 +40,50 @@ class PlatformChannelHandler {
                 }
                 self.arViewController?.updateCuboidDimensions(width: Float(width), height: Float(height), depth: Float(depth))
                 result(nil)
+            case "updateCuboidPosition":
+                guard let args = call.arguments as? [String: Any],
+                      let x = args["positionX"] as? Double,
+                      let y = args["positionY"] as? Double,
+                      let z = args["positionZ"] as? Double else {
+                    result(FlutterError(code: "INVALID_ARGUMENTS", message: "Invalid cuboid position", details: nil))
+                    return
+                }
+                self.arViewController?.updateCuboidPosition(x: Float(x), y: Float(y), z: Float(z))
+                result(nil)
             case "disposeAR":
                 self.disposeAR()
                 result(nil)
+            case "followPath":
+                guard let arVC = self.arViewController else {
+                    result(FlutterError(code: "NO_AR_CONTROLLER", message: "AR controller not initialized", details: nil))
+                    return
+                }
+                
+                // Access AR manager and call followPath
+                if let arManager = arVC.getARManager() {
+                    arManager.followPath { success in
+                        DispatchQueue.main.async {
+                            result(success)
+                        }
+                    }
+                } else {
+                    result(FlutterError(code: "NO_AR_MANAGER", message: "AR manager not available", details: nil))
+                }
+                
+            case "cancelPathFollowing":
+                guard let arVC = self.arViewController else {
+                    result(FlutterError(code: "NO_AR_CONTROLLER", message: "AR controller not initialized", details: nil))
+                    return
+                }
+                
+                // Access AR manager and cancel path following
+                if let arManager = arVC.getARManager() {
+                    arManager.cancelPathFollowing()
+                    result(true)
+                } else {
+                    result(FlutterError(code: "NO_AR_MANAGER", message: "AR manager not available", details: nil))
+                }
+                
             default:
                 result(FlutterMethodNotImplemented)
             }

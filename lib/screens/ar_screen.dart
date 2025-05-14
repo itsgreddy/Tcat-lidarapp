@@ -18,6 +18,9 @@ class _ARScreenState extends State<ARScreen> {
   bool _arInitialized = false;
   bool isColliding = false;
 
+  // Add status message to show path planning status
+  String _statusMessage = "Initialize AR to begin";
+
   @override
   void initState() {
     super.initState();
@@ -37,12 +40,17 @@ class _ARScreenState extends State<ARScreen> {
     if (success) {
       setState(() {
         _arInitialized = true;
+        _statusMessage = "AR initialized. Use the 'Plan Path' button in AR view.";
       });
 
       // Main intersection binding to model
       _intersectionSubscription = _arService.intersectionStream.listen((isIntersecting) {
         final model = Provider.of<CuboidModel>(context, listen: false);
         model.isIntersecting = isIntersecting;
+      });
+    } else {
+      setState(() {
+        _statusMessage = "Failed to initialize AR. Check device compatibility.";
       });
     }
   }
@@ -64,17 +72,38 @@ class _ARScreenState extends State<ARScreen> {
         children: [
           // AR View placeholder (in real app, rendered by native code)
           Expanded(
-            child: Container(
-              width: double.infinity,
-              color: Colors.black,
-              child: Center(
-                child: !_arInitialized
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text(
-                        'LiDAR Scanning Active',
-                        style: TextStyle(color: Colors.white),
+            child: Stack(
+              children: [
+                Container(
+                  width: double.infinity,
+                  color: Colors.black,
+                  child: Center(
+                    child: !_arInitialized
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text(
+                            'LiDAR Scanning Active',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                  ),
+                ),
+
+                // Add path planning instructions overlay
+                if (_arInitialized)
+                  Positioned(
+                    bottom: 100,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                      color: Colors.black54,
+                      child: Text(
+                        _statusMessage,
+                        style: const TextStyle(color: Colors.white),
+                        textAlign: TextAlign.center,
                       ),
-              ),
+                    ),
+                  ),
+              ],
             ),
           ),
 
@@ -106,42 +135,121 @@ class _ARScreenState extends State<ARScreen> {
             },
           ),
 
-          // Sliders for cuboid dimensions
+          // Updated sliders for cuboid dimensions and position
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Consumer<CuboidModel>(
               builder: (context, model, child) {
-                return Column(
+                return Column(  // Changed from Row to Column for better layout on smaller screens
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    DimensionSlider(
-                      label: 'Width',
-                      value: model.width,
-                      min: 40,
-                      max: 120,
-                      onChanged: (value) {
-                        model.width = value;
-                        _arService.updateCuboidDimensions(model);
-                      },
+                    // Dimension sliders
+                    Text('Size', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DimensionSlider(
+                            label: 'W',
+                            value: model.width,
+                            min: 40,
+                            max: 120,
+                            onChanged: (value) {
+                              model.width = value;
+                              _arService.updateCuboidDimensions(model);
+                            },
+                          ),
+                        ),
+                      ],
                     ),
-                    DimensionSlider(
-                      label: 'Height',
-                      value: model.height,
-                      min: 100,
-                      max: 200,
-                      onChanged: (value) {
-                        model.height = value;
-                        _arService.updateCuboidDimensions(model);
-                      },
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DimensionSlider(
+                            label: 'H',
+                            value: model.height,
+                            min: 100,
+                            max: 200,
+                            onChanged: (value) {
+                              model.height = value;
+                              _arService.updateCuboidDimensions(model);
+                            },
+                          ),
+                        ),
+                      ],
                     ),
-                    DimensionSlider(
-                      label: 'Depth',
-                      value: model.depth,
-                      min: 80,
-                      max: 150,
-                      onChanged: (value) {
-                        model.depth = value;
-                        _arService.updateCuboidDimensions(model);
-                      },
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DimensionSlider(
+                            label: 'D',
+                            value: model.depth,
+                            min: 80,
+                            max: 150,
+                            onChanged: (value) {
+                              model.depth = value;
+                              _arService.updateCuboidDimensions(model);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                        
+                    const SizedBox(height: 16),
+                        
+                    // Position sliders
+                    Text('Position', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DimensionSlider(
+                            label: 'X',
+                            value: model.positionX ?? 0.0,
+                            min: -3.0,
+                            max: 3.0,
+                            divisions: 60, // 6.0 range with 0.1 increments
+                            onChanged: (value) {
+                              model.positionX = value;
+                              _arService.updateCuboidPosition(model);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DimensionSlider(
+                            label: 'Y',
+                            value: model.positionY ?? 0.0,
+                            min: -2.0,
+                            max: 2.0,
+                            divisions: 40, // 4.0 range with 0.1 increments
+                            onChanged: (value) {
+                              model.positionY = value;
+                              _arService.updateCuboidPosition(model);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DimensionSlider(
+                            label: 'Z',
+                            value: model.positionZ ?? -1.5,
+                            min: -5.0,
+                            max: 0.0,
+                            divisions: 50, // 5.0 range with 0.1 increments
+                            onChanged: (value) {
+                              model.positionZ = value;
+                              _arService.updateCuboidPosition(model);
+                            },
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 );

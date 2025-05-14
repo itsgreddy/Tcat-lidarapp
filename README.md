@@ -9,6 +9,8 @@ LiDAR-based accessibility scanner for mapping indoor obstacles and measuring cle
 - Collision detection: red overlay when blocked, green when passable  
 - Lock/unlock cuboid to world vs. camera reference  
 - Flutter UI with sliders for Width/Height/Depth  
+- Path planning with obstacle avoidance
+- Real-time path recalculation when obstacles detected
 
 ## Controls
 
@@ -18,13 +20,28 @@ LiDAR-based accessibility scanner for mapping indoor obstacles and measuring cle
   - H: cuboid height (cm)  
   - D: cuboid depth (cm)  
 - Lock/Unlock button (top-right): fix cuboid in world space or follow camera  
-- Pan & pinch gestures on AR view to move/scale cuboid  
+- Pan & pinch gestures on AR view to move/scale cuboid
+- **Path Planning**:
+  - Tap "Plan Path" button in top-left corner of AR view
+  - First tap places the start point (green sphere)
+  - Second tap places the end point (blue sphere)
+  - The app will show a green path if clear, red if blocked
+  - If path is blocked, it will attempt to find an alternative route
+  - Export button appears when path is created
 
 ## Getting Started
 
 1. `flutter pub get`  
 2. Connect iOS/Android device with LiDAR/AR support  
-3. `flutter run`  
+3. Configure code signing:
+   - Open Xcode: `open ios/Runner.xcworkspace`
+   - Select "Runner" project in the navigator
+   - Select "Runner" target
+   - Go to "Signing & Capabilities" tab
+   - Check "Automatically manage signing"
+   - Select your personal team
+   - Change Bundle Identifier if needed (e.g., "com.yourname.tcat")
+4. `flutter run`  
 
 ## Architecture
 
@@ -43,6 +60,7 @@ LiDAR-based accessibility scanner for mapping indoor obstacles and measuring cle
 - iOS:  
   - `NSCameraUsageDescription` in `Info.plist`  
   - ARKit + LiDAR entitlement  
+  - Developer account for device testing
 
 ## Contributing
 
