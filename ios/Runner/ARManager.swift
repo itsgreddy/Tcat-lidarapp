@@ -563,100 +563,78 @@ class ARManager: NSObject {
     }
 
     private func createPath(points: [SIMD3<Float>]) -> MeshResource {
-        // Make the path much wider for better visibility
-        let lineWidth: Float = 0.08  // 8cm wide path
+        // Make the path thicker for better 3D visibility
+        let lineWidth: Float = 0.05  // 5cm radius (10cm diameter)
         
         var vertices: [SIMD3<Float>] = []
         var triangleIndices: [UInt32] = []
+        var normals: [SIMD3<Float>] = []
         var vertexIndex: UInt32 = 0
         
-        // If we have just two points, create a line with some thickness
-        if points.count == 2 {
-            let start = points[0]
-            let end = points[1]
-            let midPoint = (start + end) * 0.5
+        // Create a 3D tube along the path
+        let numSides = 8  // Number of sides for our tube (octagonal)
+        
+        for i in 0..<points.count-1 {
+            let start = points[i]
+            let end = points[i+1]
             
-            // Create a tube along the line
+            // Create direction vector
             let direction = normalize(end - start)
             let distance = length(end - start)
             
-            // Create a perpendicular vector for width
-            let up: SIMD3<Float> = [0, 1, 0]
+            // Create perpendicular vectors for the tube cross-section
+            let up = SIMD3<Float>(0, 1, 0)
             var right = normalize(cross(direction, up))
-            if length(right) < 0.1 { right = [1, 0, 0] }
-            
-            // Make tube with multiple segments for better visibility
-            let segments = max(2, Int(distance / 0.2))
-            for i in 0...segments {
-                let t = Float(i) / Float(segments)
-                let pos = start + direction * distance * t
-                
-                // Create quad at this position
-                let v1 = pos + right * lineWidth
-                let v2 = pos - right * lineWidth
-                
-                vertices.append(v1)
-                vertices.append(v2)
-                
-                if i < segments {
-                    triangleIndices.append(vertexIndex)
-                    triangleIndices.append(vertexIndex + 1)
-                    triangleIndices.append(vertexIndex + 2)
-                    
-                    triangleIndices.append(vertexIndex + 1)
-                    triangleIndices.append(vertexIndex + 3)
-                    triangleIndices.append(vertexIndex + 2)
-                    
-                    vertexIndex += 2
-                }
+            if length(right) < 0.1 {
+                // If direction is parallel to up, use a different reference vector
+                right = SIMD3<Float>(1, 0, 0)
             }
-        } else {
-            // For multiple points, create connected tube segments
-            for i in 0..<points.count-1 {
-                let start = points[i]
-                let end = points[i+1]
+            let upVector = normalize(cross(right, direction))
+            
+            // Create vertices for start and end rings
+            for point in [start, end] {
+                let baseIndex = vertices.count
                 
-                let direction = normalize(end - start)
-                
-                // Create a perpendicular vector for width
-                let up: SIMD3<Float> = [0, 1, 0]
-                var right = normalize(cross(direction, up))
-                if length(right) < 0.1 { right = [1, 0, 0] }
-                
-                let v1 = start + right * lineWidth
-                let v2 = start - right * lineWidth
-                let v3 = end + right * lineWidth
-                let v4 = end - right * lineWidth
-                
-                // Add vertices
-                if i == 0 {
-                    vertices.append(contentsOf: [v1, v2])
+                // Create a ring of vertices around this point
+                for s in 0..<numSides {
+                    let angle = Float(s) * (2.0 * Float.pi / Float(numSides))
+                    
+                    // Calculate position around the tube
+                    let xOffset = cos(angle) * lineWidth
+                    let yOffset = sin(angle) * lineWidth
+                    
+                    let vertex = point + right * xOffset + upVector * yOffset
+                    vertices.append(vertex)
+                    
+                    // Outward-pointing normal
+                    let normal = normalize(SIMD3<Float>(xOffset, yOffset, 0))
+                    normals.append(normal)
                 }
-                vertices.append(contentsOf: [v3, v4])
                 
-                // Create two triangles (a quad) for this segment
-                triangleIndices.append(contentsOf: [
-                    vertexIndex, vertexIndex + 1, vertexIndex + 2,
-                    vertexIndex + 1, vertexIndex + 3, vertexIndex + 2
-                ])
-                
-                vertexIndex += 2
-                if i == 0 { vertexIndex += 2 }
+                // If this is not the first segment, connect to previous ring
+                if i > 0 || point != start {
+                    let prevRingStart = baseIndex - numSides
+                    
+                    for s in 0..<numSides {
+                        let nextS = (s + 1) % numSides
+                        
+                        // Add two triangles to form a quad
+                        triangleIndices.append(UInt32(prevRingStart + s))
+                        triangleIndices.append(UInt32(baseIndex + s))
+                        triangleIndices.append(UInt32(baseIndex + nextS))
+                        
+                        triangleIndices.append(UInt32(prevRingStart + s))
+                        triangleIndices.append(UInt32(baseIndex + nextS))
+                        triangleIndices.append(UInt32(prevRingStart + nextS))
+                    }
+                }
             }
         }
         
         // Create mesh descriptor with positions and normals
         var meshDescriptor = MeshDescriptor()
         meshDescriptor.positions = MeshBuffer(vertices)
-        
-        // Calculate normals for better lighting
-        var normals: [SIMD3<Float>] = []
-        for _ in 0..<vertices.count {
-            normals.append([0, 1, 0])
-        }
         meshDescriptor.normals = MeshBuffer(normals)
-        
-        // Set primitive type
         meshDescriptor.primitives = .triangles(triangleIndices)
         
         // Handle potential mesh generation errors
@@ -665,7 +643,7 @@ class ARManager: NSObject {
         } catch {
             print("Error generating path mesh: \(error)")
             
-            // Create a simple fallback mesh - a small box as placeholder
+            // Create a simple fallback mesh
             return MeshResource.generateBox(size: 0.05)
         }
     }
