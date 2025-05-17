@@ -30,27 +30,27 @@ class ARViewController: UIViewController {
     // Dimension sliders
     private let widthSlider: UISlider = {
         let s = UISlider()
-        s.minimumValue = 50
-        s.maximumValue = 200
-        s.value = 70
+        s.minimumValue = 10
+        s.maximumValue = 100
+        s.value = 70  // Default width: 70cm
         s.translatesAutoresizingMaskIntoConstraints = false
         return s
     }()
     
     private let heightSlider: UISlider = {
         let s = UISlider()
-        s.minimumValue = 100
-        s.maximumValue = 250
-        s.value = 150
+        s.minimumValue = 10
+        s.maximumValue = 100
+        s.value = 100  // Default height: 100cm
         s.translatesAutoresizingMaskIntoConstraints = false
         return s
     }()
     
     private let depthSlider: UISlider = {
         let s = UISlider()
-        s.minimumValue = 50
-        s.maximumValue = 200
-        s.value = 120
+        s.minimumValue = 10
+        s.maximumValue = 100
+        s.value = 100  // Default depth: 100cm
         s.translatesAutoresizingMaskIntoConstraints = false
         return s
     }()
@@ -105,6 +105,25 @@ class ARViewController: UIViewController {
     // Add these new properties to store positions directly
     private var startMarkerPosition = SIMD3<Float>(0, 0, 0)
     private var goalMarkerPosition = SIMD3<Float>(0, 0, 0)
+
+    // Add properties to store cuboid state when switching to path planning mode
+    private var savedCuboidWidth: Float = 10.0
+    private var savedCuboidHeight: Float = 20.0
+    private var savedCuboidDepth: Float = 10.0
+    private var savedCuboidX: Float = 0.0
+    private var savedCuboidY: Float = 0.0
+    private var savedCuboidZ: Float = -1.5
+    
+    // Add label for the controls section to update with mode
+    private var controlsLabel: UILabel?
+
+    // Add a property to track last path interaction time
+    private var lastPathInteractionTime: TimeInterval = 0
+    private let pathInteractionThrottle: TimeInterval = 1.0 // 1 second minimum between path interactions
+
+    // Add a property to track which point we're currently editing
+    private var editingStartPoint = false
+    private var editPointToggleButton: UIButton?
 
     // MARK: - Lifecycle Methods
     
@@ -218,6 +237,21 @@ class ARViewController: UIViewController {
             lockButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
         ])
         lockButton.addTarget(self, action: #selector(toggleLock(_:)), for: .touchUpInside)
+        
+        // Add a label to indicate current slider mode
+        let modeLabel = UILabel()
+        modeLabel.text = "Cuboid Controls"
+        modeLabel.font = UIFont.boldSystemFont(ofSize: 16)
+        modeLabel.textAlignment = .center
+        modeLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(modeLabel)
+        
+        NSLayoutConstraint.activate([
+            modeLabel.bottomAnchor.constraint(equalTo: mainStack.topAnchor, constant: -8),
+            modeLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor)
+        ])
+        
+        self.controlsLabel = modeLabel
     }
     
     private func setupPathPlanningUI() {
@@ -302,6 +336,27 @@ class ARViewController: UIViewController {
         
         followBtn.addTarget(self, action: #selector(toggleFollowPath), for: .touchUpInside)
         self.followPathButton = followBtn
+        
+        // Add a toggle button to switch between editing start and end points
+        let editPointBtn = UIButton(type: .system)
+        editPointBtn.setTitle("Edit: End Point", for: .normal)
+        editPointBtn.backgroundColor = UIColor.systemTeal
+        editPointBtn.setTitleColor(.white, for: .normal)
+        editPointBtn.layer.cornerRadius = 8
+        editPointBtn.translatesAutoresizingMaskIntoConstraints = false
+        editPointBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 16)
+        editPointBtn.isHidden = true // Initially hidden until both points exist
+        view.addSubview(editPointBtn)
+        
+        NSLayoutConstraint.activate([
+            editPointBtn.topAnchor.constraint(equalTo: followPathButton!.bottomAnchor, constant: 8),
+            editPointBtn.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            editPointBtn.widthAnchor.constraint(equalToConstant: 110),
+            editPointBtn.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        
+        editPointBtn.addTarget(self, action: #selector(toggleEditPoint), for: .touchUpInside)
+        self.editPointToggleButton = editPointBtn
     }
 
     private func labeledSlider(_ label: String, _ slider: UISlider) -> UIView {
@@ -316,20 +371,25 @@ class ARViewController: UIViewController {
 
     // MARK: - Action Handlers
     
-    @objc private func dimensionSliderChanged(_ s: UISlider) {
-        arManager.setCuboid(
-            width: widthSlider.value,
-            height: heightSlider.value,
-            depth: depthSlider.value
-        )
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard !pathPlanningMode, let entity = arManager.currentCuboidEntity else { return }
+        let translation = gesture.translation(in: arView)
+        let dx = Float(translation.x) * 0.001
+        let dy = Float(-translation.y) * 0.001
+        entity.transform.translation += SIMD3(dx, dy, 0)
+        gesture.setTranslation(.zero, in: arView)
     }
-    
-    @objc private func positionSliderChanged(_ s: UISlider) {
-        arManager.updateCuboidPosition(
-            x: posXSlider.value,
-            y: posYSlider.value,
-            z: posZSlider.value
-        )
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        guard !pathPlanningMode, let entity = arManager.currentCuboidEntity else { return }
+        let s = Float(gesture.scale)
+        entity.scale *= SIMD3(repeating: s)
+        gesture.scale = 1
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: arView)
+        handlePathPlanningTap(location)
     }
 
     @objc private func toggleLock(_ sender: UIButton) {
@@ -342,7 +402,7 @@ class ARViewController: UIViewController {
         }
         isLocked.toggle()
     }
-    
+
     @objc private func toggleMeshVisibility(_ sender: UIButton) {
         // Toggle between showing mesh and hiding mesh
         if arView.debugOptions.contains(.showSceneUnderstanding) {
@@ -357,8 +417,13 @@ class ARViewController: UIViewController {
             sender.backgroundColor = UIColor.systemOrange
         }
     }
-    
+
     @objc private func toggleFollowPath(_ sender: UIButton) {
+        // Prevent rapid repeated taps
+        let now = Date().timeIntervalSince1970
+        guard now - lastPathInteractionTime > pathInteractionThrottle else { return }
+        lastPathInteractionTime = now
+        
         if !isFollowingPath {
             // Start following path
             sender.setTitle("Cancel", for: .normal)
@@ -374,11 +439,14 @@ class ARViewController: UIViewController {
                     self.followPathButton?.backgroundColor = UIColor.systemYellow
                     self.isFollowingPath = false
                     
+                    // Get collision side info if path was blocked
+                    let collisionSide = success ? "" : " (\(self.arManager.getLastCollisionSide()) side)"
+                    
                     // Show result to user
                     let title = success ? "Path Complete" : "Path Blocked"
                     let message = success ? 
                         "The cuboid successfully reached the destination." :
-                        "The cuboid's path was blocked by an obstacle."
+                        "The cuboid's path was blocked by an obstacle\(collisionSide)."
                     
                     let alert = UIAlertController(
                         title: title,
@@ -398,27 +466,33 @@ class ARViewController: UIViewController {
         }
     }
 
-    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard let entity = arManager.currentCuboidEntity else { return }
-        let translation = gesture.translation(in: arView)
-        let dx = Float(translation.x) * 0.001
-        let dy = Float(-translation.y) * 0.001
-        entity.transform.translation += SIMD3(dx, dy, 0)
-        gesture.setTranslation(.zero, in: arView)
+    @objc private func toggleEditPoint(_ sender: UIButton) {
+        editingStartPoint = !editingStartPoint
+        
+        // Update button title to indicate which point is being edited
+        if editingStartPoint {
+            sender.setTitle("Edit: Start Pt", for: .normal)
+            sender.backgroundColor = UIColor.systemGreen
+            
+            // Update sliders to match start point position
+            if let startPos = startPointEntity?.position(relativeTo: nil) {
+                posXSlider.value = startPos.x
+                posYSlider.value = startPos.y
+                posZSlider.value = startPos.z
+            }
+        } else {
+            sender.setTitle("Edit: End Pt", for: .normal)
+            sender.backgroundColor = UIColor.systemTeal
+            
+            // Update sliders to match goal point position
+            if let goalPos = goalPointEntity?.position(relativeTo: nil) {
+                posXSlider.value = goalPos.x
+                posYSlider.value = goalPos.y
+                posZSlider.value = goalPos.z
+            }
+        }
     }
-    
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        guard let entity = arManager.currentCuboidEntity else { return }
-        let s = Float(gesture.scale)
-        entity.scale *= SIMD3(repeating: s)
-        gesture.scale = 1
-    }
-    
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let location = gesture.location(in: arView)
-        handlePathPlanningTap(location)
-    }
-    
+
     private func requestCameraPermission() {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             DispatchQueue.main.async {
@@ -437,7 +511,7 @@ class ARViewController: UIViewController {
             }
         }
     }
-    
+
     private func initializeAR() {
         arManager.initialize(arView: arView) { [weak self] isIntersecting in
             DispatchQueue.main.async {
@@ -446,21 +520,208 @@ class ARViewController: UIViewController {
             }
         }
     }
+
+    // Fix the method signature to match what's expected
+    @objc private func dimensionSliderChanged(_ sender: UISlider) {
+        if pathPlanningMode {
+            // In path planning mode, width/height/depth sliders don't apply
+        } else {
+            // Normal mode - control cuboid dimensions
+            arManager.setCuboid(
+                width: widthSlider.value,
+                height: heightSlider.value,
+                depth: depthSlider.value
+            )
+        }
+    }
     
+    @objc private func positionSliderChanged(_ sender: UISlider) {
+        if pathPlanningMode {
+            // In path planning mode, update path point positions
+            updatePathPointsFromSliders(sender)
+        } else {
+            // Normal mode - control cuboid position
+            arManager.updateCuboidPosition(
+                x: posXSlider.value,
+                y: posYSlider.value,
+                z: posZSlider.value
+            )
+        }
+    }
+    
+    private func handlePathPlanningTap(_ location: CGPoint) {
+        // Throttle rapid taps
+        let now = Date().timeIntervalSince1970
+        guard now - lastPathInteractionTime > pathInteractionThrottle/2 else { return }
+        lastPathInteractionTime = now
+        
+        guard pathPlanningMode else { return }
+        
+        // Use a more robust raycast query to ensure we get hits
+        guard let raycast = arView.ray(through: location) else {
+            print("Failed to create ray from touch point")
+            return
+        }
+        
+        // Raycast against any estimated surfaces (not just ground planes)
+        let raycastQuery = ARRaycastQuery(
+            origin: raycast.origin,
+            direction: raycast.direction,
+            allowing: .estimatedPlane, // Use estimated plane for more reliable hits
+            alignment: .any
+        )
+        
+        var hitPosition: SIMD3<Float>? = nil
+        
+        // Try to hit any surface to get the 3D position - keep the actual Y value
+        if let result = arView.session.raycast(raycastQuery).first {
+            let worldPosition = result.worldTransform.columns.3
+            hitPosition = SIMD3<Float>(worldPosition.x, worldPosition.y, worldPosition.z)
+        } else {
+            // If no hit, use a ray at default distance
+            let defaultDistance: Float = 1.5 // 1.5 meters in front
+            let rayDirection = normalize(raycast.direction)
+            hitPosition = raycast.origin + rayDirection * defaultDistance
+        }
+        
+        // Ensure we have a hit position
+        guard let position = hitPosition else {
+            print("Failed to determine position")
+            return
+        }
+        
+        print("Placing marker at position: \(position)")
+        
+        if startPointEntity == nil {
+            // Place start point at actual 3D position
+            startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
+            startMarkerPosition = position
+            print("Placed start marker")
+        } else if goalPointEntity == nil {
+            // Place goal point at actual 3D position
+            goalPointEntity = createMarkerEntity(color: .systemBlue, position: position)
+            goalMarkerPosition = position
+            print("Placed goal marker")
+            
+            // Both points exist now, show the edit toggle button
+            editPointToggleButton?.isHidden = false
+            
+            // Use stored positions for path planning
+            print("Using positions: start=\(startMarkerPosition), goal=\(goalMarkerPosition)")
+            arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
+            exportButton?.isHidden = false
+            followPathButton?.isHidden = false
+        } else {
+            // Replace both points
+            print("Removing existing path points")
+            removePathPoints()
+            startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
+            startMarkerPosition = position
+            print("Placed new start marker")
+            followPathButton?.isHidden = true
+        }
+        
+        // Update slider values to match the tapped position (including Y)
+        posXSlider.value = position.x
+        posYSlider.value = position.y
+        posZSlider.value = position.z
+    }
+
+    // Update method to allow editing both start and end points
+    private func updatePathPointsFromSliders(_ sender: UISlider? = nil) {
+        // Use the Y slider value for point height - don't enforce ground plane
+        let pointY = posYSlider.value
+        let position = SIMD3<Float>(posXSlider.value, pointY, posZSlider.value)
+        
+        // Determine which point to update based on whether we have a start point
+        if startPointEntity == nil {
+            // Create start point at slider position
+            startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
+            startMarkerPosition = position
+            print("Created start marker at position: \(position)")
+        } else if goalPointEntity == nil {
+            // Create goal point at slider position
+            goalPointEntity = createMarkerEntity(color: .systemBlue, position: position)
+            goalMarkerPosition = position
+            print("Created goal marker at position: \(position)")
+            
+            // Both points exist now, show the edit toggle button
+            editPointToggleButton?.isHidden = false
+            
+            // Plan path between the points
+            arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
+            exportButton?.isHidden = false
+            followPathButton?.isHidden = false
+        } else {
+            // Both points exist, update based on which one we're editing
+            if sender == nil || sender == posXSlider || sender == posYSlider || sender == posZSlider {
+                if editingStartPoint {
+                    // Update start point
+                    if let entity = startPointEntity, let parent = entity.parent {
+                        parent.removeChild(entity)
+                        startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
+                        startMarkerPosition = position
+                    }
+                } else {
+                    // Update goal point
+                    if let entity = goalPointEntity, let parent = entity.parent {
+                        parent.removeChild(entity)
+                        goalPointEntity = createMarkerEntity(color: .systemBlue, position: position)
+                        goalMarkerPosition = position
+                    }
+                }
+                
+                // Update path with the new points
+                arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
+            }
+        }
+    }
+
     // MARK: - Path Planning
     
     @objc private func togglePathPlanningMode() {
+        // Add throttling here too
+        let now = Date().timeIntervalSince1970
+        guard now - lastPathInteractionTime > pathInteractionThrottle else { return }
+        lastPathInteractionTime = now
+        
         pathPlanningMode = !pathPlanningMode
         
         if pathPlanningMode {
             // Enter path planning mode
-            pathPlanButton?.setTitle("Cancel", for: .normal)
+            pathPlanButton?.setTitle("Exit Path Mode", for: .normal)
             pathPlanButton?.backgroundColor = UIColor.systemRed
+            
+            // Save current cuboid settings
+            savedCuboidWidth = widthSlider.value
+            savedCuboidHeight = heightSlider.value
+            savedCuboidDepth = depthSlider.value
+            savedCuboidX = posXSlider.value
+            savedCuboidY = posYSlider.value
+            savedCuboidZ = posZSlider.value
+            
+            // Update slider labels and purpose
+            controlsLabel?.text = "Path Point Controls"
+            
+            // Initialize sliders to camera/center position for placing points
+            if let cameraPosition = arView.session.currentFrame?.camera.transform.columns.3 {
+                posXSlider.value = cameraPosition.x
+                posYSlider.value = cameraPosition.y // Use actual camera Y position
+                posZSlider.value = cameraPosition.z
+            }
+            
+            // Disable dimension sliders since they don't apply to path points
+            widthSlider.isEnabled = false
+            heightSlider.isEnabled = false
+            depthSlider.isEnabled = false
+            
+            // Enable Y slider to allow height adjustment for path points
+            posYSlider.isEnabled = true
             
             // Show instructions
             let alert = UIAlertController(
-                title: "Path Planning",
-                message: "Tap to place start point, then tap again to place destination.",
+                title: "Path Planning Mode",
+                message: "Use the X, Y and Z position sliders to place path points. First point is start, second is destination.",
                 preferredStyle: .alert
             )
             alert.addAction(UIAlertAction(title: "OK", style: .default))
@@ -474,6 +735,36 @@ class ARViewController: UIViewController {
             pathPlanButton?.backgroundColor = UIColor.systemBlue
             exportButton?.isHidden = true
             followPathButton?.isHidden = true
+            
+            // Restore slider functionality
+            controlsLabel?.text = "Cuboid Controls"
+            
+            // Re-enable all sliders
+            widthSlider.isEnabled = true
+            heightSlider.isEnabled = true
+            depthSlider.isEnabled = true
+            posYSlider.isEnabled = true
+            
+            // Restore cuboid settings
+            widthSlider.value = savedCuboidWidth
+            heightSlider.value = savedCuboidHeight
+            depthSlider.value = savedCuboidDepth
+            posXSlider.value = savedCuboidX
+            posYSlider.value = savedCuboidY
+            posZSlider.value = savedCuboidZ
+            
+            // Apply restored values to cuboid
+            arManager.setCuboid(
+                width: savedCuboidWidth,
+                height: savedCuboidHeight,
+                depth: savedCuboidDepth
+            )
+            
+            arManager.updateCuboidPosition(
+                x: savedCuboidX, 
+                y: savedCuboidY, 
+                z: savedCuboidZ
+            )
             
             // Clear path and points
             removePathPoints()
@@ -492,118 +783,17 @@ class ARViewController: UIViewController {
             goalPointEntity = nil
             goalMarkerPosition = SIMD3<Float>(0, 0, 0) // Reset stored position
         }
-    }
-    
-    private func handlePathPlanningTap(_ location: CGPoint) {
-        guard pathPlanningMode else { return }
         
-        // Use a more robust raycast query to ensure we get hits
-        guard let raycast = arView.ray(through: location) else {
-            print("Failed to create ray from touch point")
-            return
-        }
-        
-        var raycastQuery = ARRaycastQuery(
-            origin: raycast.origin,
-            direction: raycast.direction,
-            allowing: .estimatedPlane,
-            alignment: .any
-        )
-        
-        // Fallbacks for raycast in case first attempt fails
-        let raycastMethods: [ARRaycastQuery.Target] = [
-            .estimatedPlane,
-            .existingPlaneInfinite,
-            .existingPlaneGeometry
-        ]
-        
-        var raycastResult: ARRaycastResult?
-        
-        // Try different raycast methods until we get a hit
-        for method in raycastMethods {
-            if let ray = arView.ray(through: location) {
-                raycastQuery = ARRaycastQuery(
-                    origin: ray.origin,
-                    direction: ray.direction,
-                    allowing: method,
-                    alignment: .any
-                )
-                
-                if let result = arView.session.raycast(raycastQuery).first {
-                    raycastResult = result
-                    break
-                }
-            }
-        }
-        
-        // If all raycasts failed, try to place at a reasonable default distance
-        if raycastResult == nil {
-            let defaultDistance: Float = 1.5 // 1.5 meters in front
-            guard let ray = arView.ray(through: location) else {
-                print("Failed to create ray for default position")
-                return
-            }
-            let defaultPosition = ray.origin + ray.direction * defaultDistance
-            
-            if startPointEntity == nil {
-                startPointEntity = createMarkerEntity(color: .systemGreen, position: defaultPosition)
-                startMarkerPosition = defaultPosition
-                print("Placed start marker at default position: \(defaultPosition)")
-                return
-            } else if goalPointEntity == nil {
-                goalPointEntity = createMarkerEntity(color: .systemBlue, position: defaultPosition)
-                goalMarkerPosition = defaultPosition
-                print("Placed goal marker at default position: \(defaultPosition)")
-                
-                // Use stored positions directly
-                print("Using positions: start=\(startMarkerPosition), goal=\(goalMarkerPosition)")
-                arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
-                exportButton?.isHidden = false
-                followPathButton?.isHidden = false
-                return
-            }
-        }
-        
-        guard let hitResult = raycastResult else {
-            print("Failed to place marker - no raycast hit")
-            return
-        }
-        
-        let worldPosition = hitResult.worldTransform.columns.3
-        let position = SIMD3<Float>(worldPosition.x, worldPosition.y, worldPosition.z)
-        
-        print("Raycast hit at position: \(position)")
-        
-        if startPointEntity == nil {
-            // Place start point
-            startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
-            startMarkerPosition = position
-            print("Placed start marker")
-        } else if goalPointEntity == nil {
-            // Place goal point
-            goalPointEntity = createMarkerEntity(color: .systemBlue, position: position)
-            goalMarkerPosition = position
-            print("Placed goal marker")
-            
-            // Use stored positions for path planning
-            print("Using positions: start=\(startMarkerPosition), goal=\(goalMarkerPosition)")
-            arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
-            exportButton?.isHidden = false
-            followPathButton?.isHidden = false
-        } else {
-            // Replace both points
-            print("Removing existing path points")
-            removePathPoints()
-            startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
-            startMarkerPosition = position
-            print("Placed new start marker")
-            followPathButton?.isHidden = true
-        }
+        // Hide edit toggle since there are no points
+        editPointToggleButton?.isHidden = true
+        editingStartPoint = false
+        editPointToggleButton?.setTitle("Edit: End Pt", for: .normal)
+        editPointToggleButton?.backgroundColor = UIColor.systemTeal
     }
     
     private func createMarkerEntity(color: UIColor, position: SIMD3<Float>) -> ModelEntity? {
-        // Create a sphere to mark the point - much larger radius for better visibility
-        let sphereMesh = MeshResource.generateSphere(radius: 0.1) // 10cm sphere
+        // Create a sphere to mark the point - smaller radius for better precision
+        let sphereMesh = MeshResource.generateSphere(radius: 0.03) // 3cm sphere instead of 10cm
         
         // Create a more vibrant material
         let material = SimpleMaterial(
@@ -614,7 +804,7 @@ class ARViewController: UIViewController {
         
         let entity = ModelEntity(mesh: sphereMesh, materials: [material])
         
-        // Add to AR scene
+        // Add to AR scene - ensure position is at ground level
         let anchor = AnchorEntity(world: position)
         anchor.addChild(entity)
         arView.scene.addAnchor(anchor)

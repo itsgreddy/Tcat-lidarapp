@@ -66,10 +66,18 @@ class ARManager: NSObject {
     private var groundPlaneY: Float?
     private var pathUpdateTimer: Timer?
 
+    // MARK: - Performance Improvements
+
+    // Update path update timer settings
+    private var pathUpdateInterval: TimeInterval = 2.0 // Increase to 2 seconds (was 1.0)
+    private var lastPathValidationTime: TimeInterval = 0
+    private var validationThrottleInterval: TimeInterval = 1.0 
+
+    // Update mesh processing settings
     private var lastGridUpdateTime: TimeInterval = 0
-    private var gridUpdateInterval: TimeInterval = 0.5 // Update grid at most every 0.5 seconds
+    private var gridUpdateInterval: TimeInterval = 1.0 // Increase to 1.0 seconds (was 0.5)
     private var lastCollisionCheckTime: TimeInterval = 0
-    private var collisionCheckInterval: TimeInterval = 0.1 // Check collisions at most every 0.1 seconds
+    private var collisionCheckInterval: TimeInterval = 0.2 // Increase to 0.2 seconds (was 0.1)
     private var isProcessingPath: Bool = false
 
     // Path animation properties
@@ -77,6 +85,14 @@ class ARManager: NSObject {
     private var pathAnimationTimer: Timer?
     private var currentPathIndex: Int = 0
     private var pathCompletionCallback: ((Bool) -> Void)?
+
+    // Add collision side detection properties
+    private enum CuboidSide: String {
+        case front, back, left, right, top, bottom, none
+    }
+
+    private var collisionSides: Set<CuboidSide> = []
+    private var lastReportedCollisionSide: CuboidSide = .none
 
     private let arConfiguration: ARWorldTrackingConfiguration = {
         let configuration = ARWorldTrackingConfiguration()
@@ -86,6 +102,8 @@ class ARManager: NSObject {
         configuration.planeDetection = [.horizontal]
         return configuration
     }()
+
+    private var groundVisualizer: AnchorEntity?
 
     func initialize(arView: ARView, callback: @escaping (Bool) -> Void) {
         guard ARWorldTrackingConfiguration.isSupported else { return }
@@ -104,8 +122,18 @@ class ARManager: NSObject {
         }
         
         // Reduce frequency of path update timer to improve performance
-        pathUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.validatePath()
+        pathUpdateTimer = Timer.scheduledTimer(withTimeInterval: pathUpdateInterval, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // Add throttling check
+            let currentTime = Date().timeIntervalSince1970
+            guard currentTime - self.lastPathValidationTime >= self.validationThrottleInterval else { return }
+            self.lastPathValidationTime = currentTime
+            
+            // Do validation on a background queue
+            DispatchQueue.global(qos: .utility).async {
+                self.validatePath()
+            }
         }
     }
     
@@ -174,8 +202,8 @@ class ARManager: NSObject {
             let offset = Int(meshAnchor.geometry.vertices.offset)
             let anchorTransform = meshAnchor.transform
             
-            // Process fewer vertices (every 5th vertex instead of every 3rd)
-            for i in stride(from: 0, to: meshAnchor.geometry.vertices.count, by: 5) {
+            // Process even fewer vertices (every 10th instead of every 5th)
+            for i in stride(from: 0, to: meshAnchor.geometry.vertices.count, by: 10) {
                 let ptr = buffer.contents().advanced(by: offset + i * vertexStride)
                 let vertex = ptr.bindMemory(to: SIMD3<Float>.self, capacity: 1).pointee
                 let worldVertex = anchorTransform * simd_float4(vertex, 1)
@@ -297,7 +325,9 @@ class ARManager: NSObject {
         }
     }
     
-    private func findAStar(from startWorld: SIMD3<Float>, to goalWorld: SIMD3<Float>, maxIterations: Int = 1000) -> [SIMD3<Float>]? {
+    // MARK: - Performance Improvements
+
+    private func findAStar(from startWorld: SIMD3<Float>, to goalWorld: SIMD3<Float>, maxIterations: Int = 500) -> [SIMD3<Float>]? {
         // Convert world coordinates to grid coordinates
         let startGridX = Int((startWorld.x - gridOrigin.x) / gridResolution)
         let startGridZ = Int((startWorld.z - gridOrigin.z) / gridResolution)
@@ -404,19 +434,23 @@ class ARManager: NSObject {
         var path: [SIMD3<Float>] = []
         var current = goalNode
         
+        // Make sure ground Y level is used
+        let yPosition = groundPlaneY ?? gridOrigin.y
+        
         while let node = current.cameFrom {
             // Convert grid coordinates back to world coordinates
             let worldX = gridOrigin.x + (Float(current.position.0) + 0.5) * gridResolution
             let worldZ = gridOrigin.z + (Float(current.position.1) + 0.5) * gridResolution
             
-            path.append(SIMD3<Float>(worldX, gridOrigin.y + 0.1, worldZ)) // Slightly above ground
+            // Use ground level for Y position - no additional offset
+            path.append(SIMD3<Float>(worldX, yPosition, worldZ))
             current = node
         }
         
         // Add start point
         let worldX = gridOrigin.x + (Float(current.position.0) + 0.5) * gridResolution
         let worldZ = gridOrigin.z + (Float(current.position.1) + 0.5) * gridResolution
-        path.append(SIMD3<Float>(worldX, gridOrigin.y + 0.1, worldZ))
+        path.append(SIMD3<Float>(worldX, yPosition, worldZ))
         
         // Reverse to get start->goal order
         return path.reversed()
@@ -494,7 +528,10 @@ class ARManager: NSObject {
         // Debug print path points to help diagnose issues
         print("Visualizing path with \(path.count) points")
         
-        let lineSegments = createPath(points: path)
+        // Use the actual Y coordinates of the path points - don't force to ground level
+        let pathPoints = path
+        
+        let lineSegments = createPath(points: pathPoints)
         
         // Make path much more visible with stronger colors and translucency
         let color = isBlocked ? 
@@ -516,15 +553,7 @@ class ARManager: NSObject {
         let anchor = AnchorEntity(world: .zero)
         anchor.addChild(pathMeshEntity)
         
-        // Elevate the path slightly above ground to ensure visibility
-        let pathYOffset: Float = 0.02  // 2cm above detected ground
-        if let groundY = groundPlaneY {
-            for i in 0..<path.count {
-                let point = path[i]
-                // Adjust Y position to be visible above ground
-                pathMeshEntity.position.y += pathYOffset
-            }
-        }
+        // No additional height adjustment needed here now
         
         arView.scene.addAnchor(anchor)
         pathEntity = anchor
@@ -630,31 +659,91 @@ class ARManager: NSObject {
         // Set primitive type
         meshDescriptor.primitives = .triangles(triangleIndices)
         
-        return try! MeshResource.generate(from: [meshDescriptor])
+        // Handle potential mesh generation errors
+        do {
+            return try MeshResource.generate(from: [meshDescriptor])
+        } catch {
+            print("Error generating path mesh: \(error)")
+            
+            // Create a simple fallback mesh - a small box as placeholder
+            return MeshResource.generateBox(size: 0.05)
+        }
     }
 
     private func validatePath() {
         guard !currentPath.isEmpty, let start = startPoint, let goal = goalPoint else { return }
         
-        updateOccupancyGrid()
+        // Skip validation if currently following the path
+        if isFollowingPath {
+            return
+        }
         
-        if !isPathValid(currentPath) {
-            visualizePath(path: currentPath, isBlocked: true)
+        // Update grid less often by calling this inside validatePath
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            self.updateOccupancyGrid()
             
-            if let newPath = findAStar(from: start, to: goal) {
-                currentPath = thinPath(newPath)
-                visualizePath(path: currentPath, isBlocked: false)
+            if !self.isPathValid(self.currentPath) {
+                DispatchQueue.main.async {
+                    self.visualizePath(path: self.currentPath, isBlocked: true)
+                }
+                
+                // Attempt to find new path in the background
+                if let newPath = self.findAStar(from: start, to: goal) {
+                    let thinned = self.thinPath(newPath)
+                    self.currentPath = thinned
+                    
+                    DispatchQueue.main.async {
+                        self.visualizePath(path: thinned, isBlocked: false)
+                      }
+                }
             }
         }
     }
     
     private func isPathValid(_ path: [SIMD3<Float>]) -> Bool {
-        for i in 0..<path.count-1 {
+        // Early exit if path is only one point or empty
+        if path.count <= 1 {
+            return true
+        }
+        
+        // Optimize by only checking every other segment in long paths
+        let strideValue = path.count > 10 ? 2 : 1  // Changed variable name from 'stride' to 'strideValue'
+        
+        for i in Swift.stride(from: 0, to: path.count-1, by: strideValue) {  // Use Swift.stride to disambiguate
             if !lineOfSight(from: path[i], to: path[i+1]) {
+                // Calculate path direction to determine which side is likely blocked
+                if path.count >= 2 {
+                    let pathDirection = normalize(path[1] - path[0])
+                    
+                    // Determine which side is most likely blocked based on path direction
+                    if abs(pathDirection.z) > abs(pathDirection.x) {
+                        // Path is primarily along Z axis
+                        if pathDirection.z > 0 {
+                            lastReportedCollisionSide = .front
+                        } else {
+                            lastReportedCollisionSide = .back
+                        }
+                    } else {
+                        // Path is primarily along X axis
+                        if pathDirection.x > 0 {
+                            lastReportedCollisionSide = .right
+                        } else {
+                            lastReportedCollisionSide = .left
+                        }
+                    }
+                    
+                    print("Path blocked on side: \(lastReportedCollisionSide.rawValue)")
+                }
                 return false
             }
         }
         return true
+    }
+    
+    // Add getter for collision info
+    func getLastCollisionSide() -> String {
+        return lastReportedCollisionSide.rawValue
     }
     
     func exportPathToGeoJSON() -> String? {
@@ -827,7 +916,11 @@ class ARManager: NSObject {
         let currentTime = Date().timeIntervalSince1970
         if currentTime - lastCollisionCheckTime >= collisionCheckInterval {
             lastCollisionCheckTime = currentTime
-            checkIntersection()
+            
+            // Move collision check to background thread
+            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+                self?.checkIntersection()
+            }
         }
     }
 
@@ -836,39 +929,92 @@ class ARManager: NSObject {
         let meshAnchors = arView.session.currentFrame?.anchors.compactMap { $0 as? ARMeshAnchor } ?? []
         let cuboidBounds = cuboidEntity.visualBounds(relativeTo: nil)
         var found = false
-
+        
+        // Reset collision sides
+        collisionSides.removeAll()
+        
+        // Get cuboid transform in world space
+        let cuboidTransform = cuboidEntity.transformMatrix(relativeTo: nil)
+        let cuboidPosition = cuboidEntity.position(relativeTo: nil)
+        
+        // Get cuboid dimensions and half-extents
+        let halfWidth = cuboidWidth / 2
+        let halfHeight = cuboidHeight / 2
+        let halfDepth = cuboidDepth / 2
+        
         // Sample fewer vertices for more efficient collision detection
         for meshAnchor in meshAnchors {
             let geo = meshAnchor.geometry
             let buffer = geo.vertices.buffer
-            let vertexStride = geo.vertices.stride  // Renamed to avoid name conflict
+            let vertexStride = geo.vertices.stride
             let offset = Int(geo.vertices.offset)
 
-            // Sample every 8th vertex instead of every vertex
-            for i in Swift.stride(from: 0, to: geo.vertices.count, by: 8) {  // Use Swift.stride to be explicit
-                let ptr = buffer.contents().advanced(by: offset + i * vertexStride)  // Use vertexStride instead
+            // Sample every 12th vertex instead of every 8th
+            for i in Swift.stride(from: 0, to: geo.vertices.count, by: 12) {
+                let ptr = buffer.contents().advanced(by: offset + i * vertexStride)
                 let vertex = ptr.bindMemory(to: SIMD3<Float>.self, capacity: 1).pointee
                 let worldPos = meshAnchor.transform * simd_float4(vertex, 1)
-                if cuboidBounds.contains(SIMD3(worldPos.x, worldPos.y, worldPos.z)) {
+                let worldPoint = SIMD3(worldPos.x, worldPos.y, worldPos.z)
+                
+                // Check if this point is inside the cuboid bounds
+                if cuboidBounds.contains(worldPoint) {
                     found = true
-                    break
+                    
+                    // Determine which side(s) of the cuboid this point is closest to
+                    let relativePoint = worldPoint - cuboidPosition
+                    
+                    // Convert to cuboid's local space
+                    let localX = abs(relativePoint.x)
+                    let localY = abs(relativePoint.y)
+                    let localZ = abs(relativePoint.z)
+                    
+                    // Calculate distance to each face as a percentage of half-extent
+                    let distToRight = halfWidth - localX
+                    let distToLeft = halfWidth + localX
+                    let distToTop = halfHeight - localY
+                    let distToBottom = halfHeight + localY
+                    let distToFront = halfDepth - localZ
+                    let distToBack = halfDepth + localZ
+                    
+                    // Find the closest face - the one with smallest distance
+                    let minDist = min(distToRight, min(distToLeft, min(distToTop, min(distToBottom, min(distToFront, distToBack)))))
+                    
+                    if minDist == distToRight { collisionSides.insert(.right) }
+                    else if minDist == distToLeft { collisionSides.insert(.left) }
+                    else if minDist == distToTop { collisionSides.insert(.top) }
+                    else if minDist == distToBottom { collisionSides.insert(.bottom) }
+                    else if minDist == distToFront { collisionSides.insert(.front) }
+                    else if minDist == distToBack { collisionSides.insert(.back) }
                 }
             }
+            
             if found { break }
         }
 
+        // Report collision status on main thread
         if found != isIntersecting {
             isIntersecting = found
-            let color = found ? UIColor.red.withAlphaComponent(0.6)
-                              : UIColor.green.withAlphaComponent(0.6)
-            cuboidEntity.model?.materials = [SimpleMaterial(color: color,
-                                                             roughness: 0.3,
-                                                             isMetallic: false)]
-            intersectionCallback?(found)
+            let color = found ? UIColor.red.withAlphaComponent(0.6) : UIColor.green.withAlphaComponent(0.6)
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.cuboidEntity?.model?.materials = [SimpleMaterial(
+                    color: color,
+                    roughness: 0.3,
+                    isMetallic: false
+                )]
+                
+                // Report collision with sides info
+                if found && !self.collisionSides.isEmpty {
+                    self.lastReportedCollisionSide = self.collisionSides.first ?? .none
+                    print("Collision detected on side: \(self.lastReportedCollisionSide.rawValue)")
+                }
+                
+                self.intersectionCallback?(found)
+            }
         }
     }
 
-    // New function to follow the calculated path
     func followPath(completion: @escaping (Bool) -> Void) {
         guard !currentPath.isEmpty, !isFollowingPath else {
             completion(false)
@@ -888,10 +1034,13 @@ class ARManager: NSObject {
             lockCuboid()
         }
         
-        // Start at the beginning of the path
+        // ALWAYS teleport the cuboid to the beginning of the path, regardless of where it currently is
         if let startPoint = currentPath.first {
             // Place cuboid at start position
-            let cuboidY = startPoint.y + cuboidHeight / 2
+            // Calculate Y position considering cuboid height - use actual Y coordinate
+            let cuboidY = startPoint.y + (cuboidHeight / 2) // Set Y so bottom is at start point Y
+            
+            print("Moving cuboid to path start position: \(startPoint.x), \(cuboidY), \(startPoint.z)")
             moveToWorldPosition(SIMD3<Float>(startPoint.x, cuboidY, startPoint.z))
             
             // Check if we're already intersecting at the start
@@ -902,13 +1051,19 @@ class ARManager: NSObject {
                 return
             }
             
-            // Start animation timer
-            pathAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-                self?.animateAlongPath()
+            // Start animation timer with a brief delay to ensure everything is positioned correctly
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.pathAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+                    self?.animateAlongPath()
+                }
             }
+        } else {
+            // No valid start point
+            isFollowingPath = false
+            pathCompletionCallback?(false)
         }
     }
-    
+
     private func animateAlongPath() {
         guard isFollowingPath, currentPathIndex < currentPath.count - 1 else {
             // We've reached the end of the path
@@ -936,11 +1091,11 @@ class ARManager: NSObject {
             return
         }
         
-        // Calculate new cuboid position (maintain Y height for the cuboid center)
+        // Calculate new cuboid position - maintain current Y to stay grounded
         let newPosX = currentPos.x + stepVector.x
         let newPosZ = currentPos.z + stepVector.z
         
-        // Move the cuboid
+        // Move the cuboid, keeping Y position the same to stay grounded
         moveToWorldPosition(SIMD3<Float>(newPosX, currentPos.y, newPosZ))
         
         // Check for collision after moving
@@ -949,26 +1104,84 @@ class ARManager: NSObject {
             stopPathAnimation(success: false)
         }
     }
-    
+
     private func stopPathAnimation(success: Bool) {
         pathAnimationTimer?.invalidate()
         pathAnimationTimer = nil
         isFollowingPath = false
         
+        // Reset path index to ensure next run starts from beginning
+        currentPathIndex = 0
+        
         // Call completion handler
         pathCompletionCallback?(success)
         pathCompletionCallback = nil
     }
-    
+
     private func moveToWorldPosition(_ worldPosition: SIMD3<Float>) {
         guard let entity = cuboidEntity, let anchor = anchorEntity else { return }
         
         // Update the anchor's position in world space
         anchor.transform.translation = worldPosition
     }
-    
-    // Public method to cancel ongoing path animation
+
     func cancelPathFollowing() {
-        stopPathAnimation(success: false)
+        stopPathAnimation(success: false)   
+    }
+    
+    // Add accessor method for groundPlaneY
+    func getGroundPlaneY() -> Float? {
+        return groundPlaneY
+    }
+    
+    // Ground visualization functions
+    private func showGroundVisualization() {
+        guard let groundY = groundPlaneY, groundVisualizer == nil, let arView = arView else { return }
+        
+        // Create a grid material
+        let material = SimpleMaterial(
+            color: UIColor.white.withAlphaComponent(0.3), 
+            roughness: 0.4, 
+            isMetallic: false
+        )
+        
+        // Create a large flat grid (5m x 5m)
+        let gridMesh = MeshResource.generatePlane(width: 5, depth: 5)
+        let gridEntity = ModelEntity(mesh: gridMesh, materials: [material])
+        
+        // Place at ground level
+        let anchor = AnchorEntity(world: [0, groundY + 0.001, 0]) // Slightly above ground to avoid z-fighting
+        anchor.addChild(gridEntity)
+        
+        // Add grid lines
+        for x in stride(from: -2.5, through: 2.5, by: 0.5) {
+            let lineX = ModelEntity(
+                mesh: MeshResource.generatePlane(width: 0.01, depth: 5),
+                materials: [SimpleMaterial(color: .white.withAlphaComponent(0.5), roughness: 0.5, isMetallic: false)]
+            )
+            lineX.position = [Float(x), 0.002, 0]
+            anchor.addChild(lineX)
+            
+            let lineZ = ModelEntity(
+                mesh: MeshResource.generatePlane(width: 5, depth: 0.01),
+                materials: [SimpleMaterial(color: .white.withAlphaComponent(0.5), roughness: 0.5, isMetallic: false)]
+            )
+            lineZ.position = [0, 0.002, Float(x)]
+            anchor.addChild(lineZ)
+        }
+        
+        arView.scene.addAnchor(anchor)
+        groundVisualizer = anchor
+    }
+    
+    func toggleGroundVisualization() -> Bool {
+        if let visualizer = groundVisualizer, let arView = arView {
+            arView.scene.removeAnchor(visualizer)
+            groundVisualizer = nil
+            return false // Visualization turned off
+        } else {
+            showGroundVisualization()
+            return true // Visualization turned on
+        }
     }
 }

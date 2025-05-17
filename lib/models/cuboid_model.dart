@@ -1,9 +1,9 @@
 import 'package:flutter/foundation.dart';
 
 class CuboidModel extends ChangeNotifier {
-  double _width = 70.0; // cm - default wheelchair width
-  double _height = 150.0; // cm - default height with person
-  double _depth = 120.0; // cm - default wheelchair length
+  double _width = 10.0; // cm - default wheelchair width
+  double _height = 20.0; // cm - default height with person
+  double _depth = 10.0; // cm - default wheelchair length
   bool _isIntersecting = false;
 
   // Add position properties
