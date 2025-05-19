@@ -1014,6 +1014,14 @@ class ARManager: NSObject {
         }
     }
 
+    // Clear any visualized path
+    func clearPath() {
+        if let anchor = pathEntity {
+            arView?.scene.removeAnchor(anchor)
+            pathEntity = nil
+        }
+    }
+    
     func followPath(completion: @escaping (Bool) -> Void) {
         guard !currentPath.isEmpty, !isFollowingPath else {
             completion(false)

@@ -612,8 +612,9 @@ class ARViewController: UIViewController {
             exportButton?.isHidden = false
             followPathButton?.isHidden = false
         } else {
-            // Replace both points
-            print("Removing existing path points")
+            // Replace both points: clear path then markers
+            print("Removing existing path points and clearing path visualization")
+            arManager.clearPath()
             removePathPoints()
             startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
             startMarkerPosition = position
@@ -653,28 +654,29 @@ class ARViewController: UIViewController {
             exportButton?.isHidden = false
             followPathButton?.isHidden = false
         } else {
-            // Both points exist, update based on which one we're editing
-            if sender == nil || sender == posXSlider || sender == posYSlider || sender == posZSlider {
-                if editingStartPoint {
-                    // Update start point
-                    if let entity = startPointEntity, let parent = entity.parent {
-                        parent.removeChild(entity)
-                        startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
-                        startMarkerPosition = position
-                    }
-                } else {
-                    // Update goal point
-                    if let entity = goalPointEntity, let parent = entity.parent {
-                        parent.removeChild(entity)
-                        goalPointEntity = createMarkerEntity(color: .systemBlue, position: position)
-                        goalMarkerPosition = position
-                    }
-                }
-                
-                // Update path with the new points
+            // Both points exist: clear old path and update based on which one we're editing
+            arManager.clearPath()
+             if sender == nil || sender == posXSlider || sender == posYSlider || sender == posZSlider {
+                 if editingStartPoint {
+                     // Update start point
+                     if let entity = startPointEntity, let parent = entity.parent {
+                         parent.removeChild(entity)
+                         startPointEntity = createMarkerEntity(color: .systemGreen, position: position)
+                         startMarkerPosition = position
+                     }
+                 } else {
+                     // Update goal point
+                     if let entity = goalPointEntity, let parent = entity.parent {
+                         parent.removeChild(entity)
+                         goalPointEntity = createMarkerEntity(color: .systemBlue, position: position)
+                         goalMarkerPosition = position
+                     }
+                 }
+
+                 // Update path with the new points
                 arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
-            }
-        }
+             }
+         }
     }
 
     // MARK: - Path Planning
@@ -784,6 +786,8 @@ class ARViewController: UIViewController {
             goalMarkerPosition = SIMD3<Float>(0, 0, 0) // Reset stored position
         }
         
+        // Clear any existing path visualization
+        arManager.clearPath()
         // Hide edit toggle since there are no points
         editPointToggleButton?.isHidden = true
         editingStartPoint = false
