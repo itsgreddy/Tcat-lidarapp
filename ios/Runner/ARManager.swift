@@ -316,11 +316,25 @@ class ARManager: NSObject {
                 self?.isProcessingPath = false
             }
         } else {
-            // No path found - visualize the blocked straight path
+            // No straight path: draw blocked straight line, then recalc A* and draw curved path
             currentPath = straightLinePath
             DispatchQueue.main.async { [weak self] in
                 self?.visualizePath(path: straightLinePath, isBlocked: true)
-                self?.isProcessingPath = false
+            }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                self.updateOccupancyGrid()
+                if let astarPath = self.findAStar(from: start, to: goal, maxIterations: 2000) {
+                    let smoothed = self.thinPath(astarPath)
+                    self.currentPath = smoothed
+                    DispatchQueue.main.async {
+                        print("PlanPath: A* found alternative path with \(smoothed.count) waypoints")
+                        self.visualizePath(path: smoothed, isBlocked: false)
+                    }
+                } else {
+                    print("PlanPath: A* failed to find alternative path")
+                }
+                self.isProcessingPath = false
             }
         }
     }
@@ -524,42 +538,49 @@ class ARManager: NSObject {
             print("Cannot visualize path: invalid path or no ARView")
             return 
         }
+
+        // Clamp all waypoint Y values to the ground plane (or lowest path Y)
+        let yLevel = groundPlaneY ?? path.map { $0.y }.min() ?? 0
+        let pathPoints = path.map { SIMD3<Float>($0.x, yLevel, $0.z) }
         
-        // Debug print path points to help diagnose issues
-        print("Visualizing path with \(path.count) points")
-        
-        // Use the actual Y coordinates of the path points - don't force to ground level
-        let pathPoints = path
-        
-        let lineSegments = createPath(points: pathPoints)
-        
-        // Make path much more visible with stronger colors and translucency
-        let color = isBlocked ? 
-            UIColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 0.9) :  // Bright red
-            UIColor(red: 0.2, green: 1.0, blue: 0.2, alpha: 0.9)    // Bright green
+        // Debug: log path points
+        print("visualizePath: pathPoints = \(pathPoints)")
+         // Render each segment as a thin cylinder instead of custom mesh tubing
+         let color = isBlocked ? UIColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 0.9)
+                             : UIColor(red: 0.2, green: 1.0, blue: 0.9, alpha: 0.9)
+         let material = SimpleMaterial(color: color, roughness: 0.1, isMetallic: true)
+         let anchor = AnchorEntity(world: .zero)
+         // Draw horizontal path segments at ground level
+         let thickness: Float = 0.02  // 2cm height
+         for i in 0..<pathPoints.count-1 {
+            let start = pathPoints[i]
+            let end = pathPoints[i+1]
+            // Horizontal direction and length
+            let dx = end.x - start.x, dz = end.z - start.z
+            let length = sqrt(dx*dx + dz*dz)
+            guard length > 0 else { continue }
+            let dirFlat = normalize(SIMD3<Float>(dx, 0, dz))
             
-        let material = SimpleMaterial(
-            color: color,
-            roughness: 0.1,
-            isMetallic: true
-        )
-        
-        let pathMeshEntity = ModelEntity(mesh: lineSegments, materials: [material])
-        
-        // Add glow effect by slightly scaling the path
-        pathMeshEntity.scale = [1.05, 1.05, 1.05]
-        
-        // Ensure the path is anchored in world space not camera space
-        let anchor = AnchorEntity(world: .zero)
-        anchor.addChild(pathMeshEntity)
-        
-        // No additional height adjustment needed here now
-        
-        arView.scene.addAnchor(anchor)
-        pathEntity = anchor
-        pathMaterial = material
-        
-        print("Path visualization complete")
+            // Create unit box and scale to segment dimensions
+            let segment = ModelEntity(mesh: MeshResource.generateBox(size: [1,1,1]),
+                                      materials: [material])
+            segment.scale = SIMD3<Float>(length, thickness, thickness)
+            
+            // Position at segment midpoint on ground
+            let mid = (start + end) * 0.5
+            segment.position = SIMD3<Float>(mid.x, yLevel + thickness/2, mid.z)
+            
+            // Rotate from local X axis to direction in XZ plane
+            let xAxis = SIMD3<Float>(1, 0, 0)
+            segment.orientation = simd_quatf(from: xAxis, to: dirFlat)
+            
+            anchor.addChild(segment)
+         }
+         arView.scene.addAnchor(anchor)
+         pathEntity = anchor
+         pathMaterial = material
+         
+        print("Path visualization complete: rendered \(pathPoints.count-1) segments")
     }
 
     private func createPath(points: [SIMD3<Float>]) -> MeshResource {
