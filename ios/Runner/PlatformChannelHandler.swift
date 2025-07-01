@@ -61,11 +61,11 @@ class PlatformChannelHandler {
                 
                 // Access AR manager and call followPath
                 if let arManager = arVC.getARManager() {
-                    arManager.followPath { success in
+                    arManager.followPath(completion: { success in
                         DispatchQueue.main.async {
                             result(success)
                         }
-                    }
+                    })
                 } else {
                     result(FlutterError(code: "NO_AR_MANAGER", message: "AR manager not available", details: nil))
                 }

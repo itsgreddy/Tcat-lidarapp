@@ -64,6 +64,11 @@ class ARManager: NSObject {
     private var pathEntity: AnchorEntity? // Changed from Entity to AnchorEntity
     private var pathMaterial = SimpleMaterial(color: .green, roughness: 0.3, isMetallic: false)
     private var groundPlaneY: Float?
+    
+    // K-paths visualization properties
+    private var kPathEntities: [AnchorEntity] = []
+    private var allKPaths: [[SIMD3<Float>]] = []
+    private var selectedPathIndex: Int = 0
     private var pathUpdateTimer: Timer?
 
     // MARK: - Performance Improvements
@@ -275,6 +280,9 @@ class ARManager: NSObject {
             arView?.scene.removeAnchor(pathEntity) // Now works with AnchorEntity
             self.pathEntity = nil
         }
+        
+        // Clear any existing k-paths
+        clearAllKPaths()
         
         // Plan the path
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1022,6 +1030,152 @@ class ARManager: NSObject {
         }
     }
     
+    // Clear all k-paths visualization
+    func clearAllKPaths() {
+        for pathEntity in kPathEntities {
+            arView?.scene.removeAnchor(pathEntity)
+        }
+        kPathEntities.removeAll()
+        allKPaths.removeAll()
+        selectedPathIndex = 0
+    }
+    
+    // Visualize multiple k-paths with different colors
+    func visualizeKPaths(k: Int = 3) {
+        // Clear existing k-paths
+        clearAllKPaths()
+        
+        guard let start = startPoint, let goal = goalPoint else {
+            print("k-paths visualization failed: start or goal point not set")
+            return
+        }
+        
+        print("Visualizing k-paths with k=\(k)")
+        
+        // Get the k-paths
+        let paths = planKPaths(k: k)
+        allKPaths = paths
+        
+        guard !paths.isEmpty else {
+            print("No paths found for k-paths visualization")
+            return
+        }
+        
+        // Define colors for different paths
+        let pathColors: [UIColor] = [
+            UIColor(red: 0.2, green: 1.0, blue: 0.2, alpha: 0.9),  // Bright green (primary)
+            UIColor(red: 1.0, green: 0.6, blue: 0.0, alpha: 0.9),  // Orange (alternative 1)
+            UIColor(red: 0.2, green: 0.6, blue: 1.0, alpha: 0.9),  // Blue (alternative 2)
+            UIColor(red: 1.0, green: 0.2, blue: 0.8, alpha: 0.9),  // Pink (alternative 3)
+            UIColor(red: 0.8, green: 0.2, blue: 1.0, alpha: 0.9),  // Purple (alternative 4)
+        ]
+        
+        // Visualize each path with different color and thickness
+        for (index, path) in paths.enumerated() {
+            let colorIndex = index % pathColors.count
+            let color = pathColors[colorIndex]
+            let thickness: Float = index == 0 ? 0.025 : 0.015  // Primary path thicker
+            
+            let pathEntity = createKPathVisualization(path: path, color: color, thickness: thickness, pathIndex: index)
+            if let entity = pathEntity {
+                kPathEntities.append(entity)
+                arView?.scene.addAnchor(entity)
+            }
+        }
+        
+        // Set the first (shortest) path as current for following
+        if let firstPath = paths.first {
+            currentPath = firstPath
+            selectedPathIndex = 0
+        }
+        
+        print("K-paths visualization complete: showing \(paths.count) paths")
+        for (index, path) in paths.enumerated() {
+            print("  Path \(index + 1): \(path.count) waypoints, length: \(String(format: "%.2f", calculatePathLength(path)))m")
+        }
+    }
+    
+    // Create visualization for a single k-path
+    private func createKPathVisualization(path: [SIMD3<Float>], color: UIColor, thickness: Float, pathIndex: Int) -> AnchorEntity? {
+        guard let arView = arView, path.count >= 2 else { 
+            print("Cannot visualize k-path: invalid path or no ARView")
+            return nil
+        }
+
+        // Clamp all waypoint Y values to the ground plane
+        let yLevel = groundPlaneY ?? path.map { $0.y }.min() ?? 0
+        let pathPoints = path.map { SIMD3<Float>($0.x, yLevel, $0.z) }
+        
+        let material = SimpleMaterial(color: color, roughness: 0.1, isMetallic: true)
+        let anchor = AnchorEntity(world: .zero)
+        
+        // Draw horizontal path segments at ground level
+        for i in 0..<pathPoints.count-1 {
+            let start = pathPoints[i]
+            let end = pathPoints[i+1]
+            
+            // Horizontal direction and length
+            let dx = end.x - start.x, dz = end.z - start.z
+            let length = sqrt(dx*dx + dz*dz)
+            guard length > 0 else { continue }
+            let dirFlat = normalize(SIMD3<Float>(dx, 0, dz))
+            
+            // Create unit box and scale to segment dimensions
+            let segment = ModelEntity(mesh: MeshResource.generateBox(size: [1,1,1]),
+                                      materials: [material])
+            segment.scale = SIMD3<Float>(length, thickness, thickness)
+            
+            // Position at segment midpoint on ground
+            let mid = (start + end) * 0.5
+            segment.position = SIMD3<Float>(mid.x, yLevel + thickness/2, mid.z)
+            
+            // Rotate from local X axis to direction in XZ plane
+            let xAxis = SIMD3<Float>(1, 0, 0)
+            segment.orientation = simd_quatf(from: xAxis, to: dirFlat)
+            
+            anchor.addChild(segment)
+        }
+        
+        // Add path label at start point
+        addPathLabel(to: anchor, at: pathPoints.first ?? SIMD3<Float>.zero, pathIndex: pathIndex, yLevel: yLevel)
+        
+        return anchor
+    }
+    
+    // Add a small label/marker to identify each path
+    private func addPathLabel(to anchor: AnchorEntity, at position: SIMD3<Float>, pathIndex: Int, yLevel: Float) {
+        // Create a small sphere as path identifier
+        let sphereMesh = MeshResource.generateSphere(radius: 0.02)
+        let labelColor = pathIndex == 0 ? UIColor.white : UIColor.yellow
+        let material = SimpleMaterial(color: labelColor, roughness: 0.1, isMetallic: true)
+        
+        let labelEntity = ModelEntity(mesh: sphereMesh, materials: [material])
+        labelEntity.position = SIMD3<Float>(position.x, yLevel + 0.05, position.z) // Slightly above path
+        
+        anchor.addChild(labelEntity)
+    }
+    
+    // Select a specific path from k-paths for following
+    func selectPathForFollowing(pathIndex: Int) -> Bool {
+        guard pathIndex >= 0 && pathIndex < allKPaths.count else {
+            print("Invalid path index: \(pathIndex), available paths: \(allKPaths.count)")
+            return false
+        }
+        
+        selectedPathIndex = pathIndex
+        currentPath = allKPaths[pathIndex]
+        
+        print("Selected path \(pathIndex + 1) for following (\(currentPath.count) waypoints)")
+        return true
+    }
+    
+    // Get information about available k-paths
+    func getKPathsInfo() -> [(index: Int, length: Float, waypoints: Int)] {
+        return allKPaths.enumerated().map { index, path in
+            (index: index, length: calculatePathLength(path), waypoints: path.count)
+        }
+    }
+    
     func followPath(completion: @escaping (Bool) -> Void) {
         guard !currentPath.isEmpty, !isFollowingPath else {
             completion(false)
@@ -1191,4 +1345,170 @@ class ARManager: NSObject {
             return true // Visualization turned on
         }
     }
+    
+    // MARK: - K-Paths Planning
+    
+    /// Returns up to k non-identical, collision-free paths between startPoint and goalPoint
+    /// Paths are sorted by total length (shortest first)
+    public func planKPaths(k: Int = 3) -> [[SIMD3<Float>]] {
+        guard let start = startPoint, let goal = goalPoint else {
+            print("k-paths planning failed: start or goal point not set")
+            return []
+        }
+        
+        print("k-paths planning: searching for up to \(k) paths from \(start) to \(goal)")
+        
+        // Update the occupancy grid first
+        updateOccupancyGrid()
+        
+        var foundPaths: [[SIMD3<Float>]] = []
+        var modifiedCells: [(Int, Int, CellState)] = [] // Track original states for restoration
+        
+        for pathIndex in 0..<k {
+            print("k-paths planning: searching for path \(pathIndex + 1)/\(k)")
+            
+            // Try to find a path with current grid state
+            if let rawPath = findAStar(from: start, to: goal, maxIterations: 2000) {
+                let thinned = thinPath(rawPath)
+                foundPaths.append(thinned)
+                print("k-paths planning: found path \(pathIndex + 1) with \(thinned.count) waypoints, length: \(calculatePathLength(thinned))")
+                
+                // Mark this path as temporarily occupied in the grid
+                let pathCells = convertPathToGridCells(thinned)
+                for (gridX, gridZ) in pathCells {
+                    if gridX >= 0 && gridX < gridSize.width && gridZ >= 0 && gridZ < gridSize.height {
+                        // Save original state for restoration
+                        let originalState = occupancyGrid[gridX][gridZ]
+                        modifiedCells.append((gridX, gridZ, originalState))
+                        
+                        // Mark as occupied to force next search to find alternative route
+                        occupancyGrid[gridX][gridZ] = .occupied
+                    }
+                }
+            } else {
+                print("k-paths planning: no more paths found at iteration \(pathIndex + 1)")
+                break
+            }
+        }
+        
+        // Restore original grid states
+        for (gridX, gridZ, originalState) in modifiedCells {
+            occupancyGrid[gridX][gridZ] = originalState
+        }
+        
+        // Sort paths by length (shortest first)
+        let sortedPaths = foundPaths.sorted { path1, path2 in
+            calculatePathLength(path1) < calculatePathLength(path2)
+        }
+        
+        print("k-paths planning produced \(sortedPaths.count) paths")
+        for (index, path) in sortedPaths.enumerated() {
+            print("  Path \(index + 1): \(path.count) waypoints, length: \(String(format: "%.2f", calculatePathLength(path)))m")
+        }
+        
+        return sortedPaths
+    }
+    
+    /// Convert a world-space path to grid cell coordinates
+    private func convertPathToGridCells(_ path: [SIMD3<Float>]) -> [(Int, Int)] {
+        var cells: [(Int, Int)] = []
+        
+        for i in 0..<path.count-1 {
+            let start = path[i]
+            let end = path[i+1]
+            
+            // Get all grid cells along this segment using Bresenham's line algorithm
+            let startGridX = Int((start.x - gridOrigin.x) / gridResolution)
+            let startGridZ = Int((start.z - gridOrigin.z) / gridResolution)
+            let endGridX = Int((end.x - gridOrigin.x) / gridResolution)
+            let endGridZ = Int((end.z - gridOrigin.z) / gridResolution)
+            
+            let lineCells = bresenhamLine(from: (startGridX, startGridZ), to: (endGridX, endGridZ))
+            cells.append(contentsOf: lineCells)
+        }
+        
+        // Remove duplicates
+        var uniqueCells: [(Int, Int)] = []
+        var seenCells: Set<String> = []
+        
+        for cell in cells {
+            let key = "\(cell.0),\(cell.1)"
+            if !seenCells.contains(key) {
+                seenCells.insert(key)
+                uniqueCells.append(cell)
+            }
+        }
+        
+        return uniqueCells
+    }
+    
+    /// Simple Bresenham's line algorithm to get all grid cells along a line
+    private func bresenhamLine(from start: (Int, Int), to end: (Int, Int)) -> [(Int, Int)] {
+        var cells: [(Int, Int)] = []
+        
+        let dx = abs(end.0 - start.0)
+        let dz = abs(end.1 - start.1)
+        let sx = start.0 < end.0 ? 1 : -1
+        let sz = start.1 < end.1 ? 1 : -1
+        var err = dx - dz
+        
+        var currentX = start.0
+        var currentZ = start.1
+        
+        while true {
+            cells.append((currentX, currentZ))
+            
+            if currentX == end.0 && currentZ == end.1 {
+                break
+            }
+            
+            let e2 = 2 * err
+            if e2 > -dz {
+                err -= dz
+                currentX += sx
+            }
+            if e2 < dx {
+                err += dx
+                currentZ += sz
+            }
+        }
+        
+        return cells
+    }
+    
+    /// Calculate the total length of a path
+    private func calculatePathLength(_ path: [SIMD3<Float>]) -> Float {
+        guard path.count > 1 else { return 0.0 }
+        
+        var totalLength: Float = 0.0
+        for i in 0..<path.count-1 {
+            let segment = path[i+1] - path[i]
+            totalLength += length(segment)
+        }
+        return totalLength
+    }
+
+    // MARK: - Testing Methods
+    
+    /// Test method to verify k-paths functionality
+    public func testKPaths() {
+        guard let start = startPoint, let goal = goalPoint else {
+            print("Test k-paths: No start/goal points set")
+            return
+        }
+        
+        print("=== Testing K-Paths Functionality ===")
+        
+        // Test with k=3
+        let paths = planKPaths(k: 3)
+        
+        print("Test completed. Found \(paths.count) paths:")
+        for (index, path) in paths.enumerated() {
+            print("  Test Path \(index + 1): \(path.count) waypoints, length: \(String(format: "%.2f", calculatePathLength(path)))m")
+        }
+        
+        print("=== End K-Paths Test ===")
+    }
+
+    // MARK: - Existing Methods
 }

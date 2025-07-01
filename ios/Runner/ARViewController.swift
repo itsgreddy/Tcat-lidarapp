@@ -100,6 +100,7 @@ class ARViewController: UIViewController {
     private var pathPlanButton: UIButton?
     private var meshButton: UIButton?
     private var followPathButton: UIButton?
+    private var kPathsButton: UIButton?
     private var isFollowingPath = false
     
     // Add these new properties to store positions directly
@@ -337,6 +338,27 @@ class ARViewController: UIViewController {
         followBtn.addTarget(self, action: #selector(toggleFollowPath), for: .touchUpInside)
         self.followPathButton = followBtn
         
+        // Add k-paths button for multiple path visualization
+        let kPathsBtn = UIButton(type: .system)
+        kPathsBtn.setTitle("Show K-Paths", for: .normal)
+        kPathsBtn.backgroundColor = UIColor.systemIndigo
+        kPathsBtn.setTitleColor(.white, for: .normal)
+        kPathsBtn.layer.cornerRadius = 8
+        kPathsBtn.translatesAutoresizingMaskIntoConstraints = false
+        kPathsBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 16)
+        kPathsBtn.isHidden = true  // Initially hidden until path is created
+        view.addSubview(kPathsBtn)
+        
+        NSLayoutConstraint.activate([
+            kPathsBtn.topAnchor.constraint(equalTo: followBtn.bottomAnchor, constant: 8),
+            kPathsBtn.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            kPathsBtn.widthAnchor.constraint(equalToConstant: 110),
+            kPathsBtn.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        
+        kPathsBtn.addTarget(self, action: #selector(toggleKPaths), for: .touchUpInside)
+        self.kPathsButton = kPathsBtn
+        
         // Add a toggle button to switch between editing start and end points
         let editPointBtn = UIButton(type: .system)
         editPointBtn.setTitle("Edit: End Point", for: .normal)
@@ -349,7 +371,7 @@ class ARViewController: UIViewController {
         view.addSubview(editPointBtn)
         
         NSLayoutConstraint.activate([
-            editPointBtn.topAnchor.constraint(equalTo: followPathButton!.bottomAnchor, constant: 8),
+            editPointBtn.topAnchor.constraint(equalTo: kPathsBtn.bottomAnchor, constant: 8),
             editPointBtn.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             editPointBtn.widthAnchor.constraint(equalToConstant: 110),
             editPointBtn.heightAnchor.constraint(equalToConstant: 44)
@@ -611,6 +633,7 @@ class ARViewController: UIViewController {
             arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
             exportButton?.isHidden = false
             followPathButton?.isHidden = false
+            kPathsButton?.isHidden = false
         } else {
             // Replace both points: clear path then markers
             print("Removing existing path points and clearing path visualization")
@@ -620,6 +643,7 @@ class ARViewController: UIViewController {
             startMarkerPosition = position
             print("Placed new start marker")
             followPathButton?.isHidden = true
+            kPathsButton?.isHidden = true
         }
         
         // Update slider values to match the tapped position (including Y)
@@ -653,6 +677,7 @@ class ARViewController: UIViewController {
             arManager.setPathPoints(start: startMarkerPosition, goal: goalMarkerPosition)
             exportButton?.isHidden = false
             followPathButton?.isHidden = false
+            kPathsButton?.isHidden = false
         } else {
             // Both points exist: clear old path and update based on which one we're editing
             arManager.clearPath()
@@ -737,6 +762,7 @@ class ARViewController: UIViewController {
             pathPlanButton?.backgroundColor = UIColor.systemBlue
             exportButton?.isHidden = true
             followPathButton?.isHidden = true
+            kPathsButton?.isHidden = true
             
             // Restore slider functionality
             controlsLabel?.text = "Cuboid Controls"
@@ -879,5 +905,63 @@ class ARViewController: UIViewController {
     // Add accessor method for ARManager
     func getARManager() -> ARManager? {
         return arManager
+    }
+    
+    @objc private func toggleKPaths(_ sender: UIButton) {
+        // Prevent rapid repeated taps
+        let now = Date().timeIntervalSince1970
+        guard now - lastPathInteractionTime > pathInteractionThrottle else { return }
+        lastPathInteractionTime = now
+        
+        if sender.title(for: .normal) == "Show K-Paths" {
+            // Show multiple paths
+            sender.setTitle("Hide K-Paths", for: .normal)
+            sender.backgroundColor = UIColor.systemRed
+            
+            print("Triggering k-paths visualization...")
+            arManager.visualizeKPaths(k: 3)
+            
+            // Show path selection alert
+            let pathsInfo = arManager.getKPathsInfo()
+            if pathsInfo.count > 1 {
+                showPathSelectionAlert(pathsInfo: pathsInfo)
+            }
+        } else {
+            // Hide multiple paths
+            sender.setTitle("Show K-Paths", for: .normal)
+            sender.backgroundColor = UIColor.systemIndigo
+            
+            print("Clearing k-paths visualization...")
+            arManager.clearAllKPaths()
+        }
+    }
+    
+    private func showPathSelectionAlert(pathsInfo: [(index: Int, length: Float, waypoints: Int)]) {
+        let alert = UIAlertController(
+            title: "Select Path to Follow",
+            message: "Choose which path the cuboid should follow:",
+            preferredStyle: .actionSheet
+        )
+        
+        for pathInfo in pathsInfo {
+            let pathTitle = "Path \(pathInfo.index + 1): \(String(format: "%.2f", pathInfo.length))m (\(pathInfo.waypoints) points)"
+            let action = UIAlertAction(title: pathTitle, style: .default) { [weak self] _ in
+                let success = self?.arManager.selectPathForFollowing(pathIndex: pathInfo.index) ?? false
+                if success {
+                    print("Selected path \(pathInfo.index + 1) for following")
+                }
+            }
+            alert.addAction(action)
+        }
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        // For iPad compatibility
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = kPathsButton
+            popover.sourceRect = kPathsButton?.bounds ?? CGRect.zero
+        }
+        
+        present(alert, animated: true)
     }
 }
