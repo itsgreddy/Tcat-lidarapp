@@ -71,6 +71,11 @@ class ARManager: NSObject {
     private var selectedPathIndex: Int = 0
     private var pathUpdateTimer: Timer?
 
+    // Wall detection properties
+    private var meshVertexCache: [(position: SIMD3<Float>, normal: SIMD3<Float>)] = []
+    private var lastMeshUpdateTime: TimeInterval = 0
+    private let meshCacheUpdateInterval: TimeInterval = 2.0 // Update mesh cache every 2 seconds
+
     // MARK: - Performance Improvements
 
     // Update path update timer settings
@@ -110,6 +115,10 @@ class ARManager: NSObject {
 
     private var groundVisualizer: AnchorEntity?
 
+    // Wall visualization properties
+    private var wallVisualizationEntities: [AnchorEntity] = []
+    private var isWallVisualizationEnabled: Bool = false
+    
     func initialize(arView: ARView, callback: @escaping (Bool) -> Void) {
         guard ARWorldTrackingConfiguration.isSupported else { return }
         self.arView = arView
@@ -251,6 +260,9 @@ class ARManager: NSObject {
                 }
             }
         }
+        
+        // Update mesh vertex cache for wall detection
+        updateMeshVertexCache(meshAnchors: meshAnchors)
     }
 
     func setPathPoints(start: SIMD3<Float>, goal: SIMD3<Float>) {
@@ -1092,6 +1104,9 @@ class ARManager: NSObject {
         print("K-paths visualization complete: showing \(paths.count) paths")
         for (index, path) in paths.enumerated() {
             print("  Path \(index + 1): \(path.count) waypoints, length: \(String(format: "%.2f", calculatePathLength(path)))m")
+            
+            // Add wall proximity analysis for each path
+            analyzePathWallProximity(path: path, pathIndex: index + 1)
         }
     }
     
@@ -1346,7 +1361,24 @@ class ARManager: NSObject {
         }
     }
     
-    // MARK: - K-Paths Planning
+    // MARK: - K-Paths Planning Algorithm
+    
+    /* K-PATHS ALGORITHM IMPROVEMENTS:
+     * 
+     * Problem: Original implementation was finding only 1 path because the blocking
+     * mechanism was too aggressive (2-cell radius around entire path).
+     * 
+     * Solutions implemented:
+     * 1. PROGRESSIVE BLOCKING: Start with exact path blocking (radius 0) for first alternative,
+     *    then use minimal radius (1) for subsequent paths
+     * 2. STRATEGIC PARTIAL BLOCKING: Instead of blocking every cell, block every 3rd cell
+     *    with spacing to allow A* to find alternative routes around blocked sections
+     * 3. REDUCED SIMILARITY THRESHOLD: Changed from 80% to 60% to allow more path diversity
+     * 4. SMARTER GRID RESTORATION: Backup and restore original grid state after all searches
+     * 
+     * This allows A* to find meaningful alternative routes while still ensuring paths
+     * are sufficiently different from each other.
+     */
     
     /// Returns up to k non-identical, collision-free paths between startPoint and goalPoint
     /// Paths are sorted by total length (shortest first)
@@ -1358,11 +1390,11 @@ class ARManager: NSObject {
         
         print("k-paths planning: searching for up to \(k) paths from \(start) to \(goal)")
         
-        // Update the occupancy grid first
+        // Update the occupancy grid first and create a backup
         updateOccupancyGrid()
+        let originalGrid = occupancyGrid // Create backup of original grid state
         
         var foundPaths: [[SIMD3<Float>]] = []
-        var modifiedCells: [(Int, Int, CellState)] = [] // Track original states for restoration
         
         for pathIndex in 0..<k {
             print("k-paths planning: searching for path \(pathIndex + 1)/\(k)")
@@ -1371,42 +1403,113 @@ class ARManager: NSObject {
             if let rawPath = findAStar(from: start, to: goal, maxIterations: 2000) {
                 let thinned = thinPath(rawPath)
                 foundPaths.append(thinned)
-                print("k-paths planning: found path \(pathIndex + 1) with \(thinned.count) waypoints, length: \(calculatePathLength(thinned))")
+                print("k-paths planning: found path \(pathIndex + 1) with \(thinned.count) waypoints, length: \(String(format: "%.2f", calculatePathLength(thinned)))m")
                 
-                // Mark this path as temporarily occupied in the grid
-                let pathCells = convertPathToGridCells(thinned)
-                for (gridX, gridZ) in pathCells {
-                    if gridX >= 0 && gridX < gridSize.width && gridZ >= 0 && gridZ < gridSize.height {
-                        // Save original state for restoration
-                        let originalState = occupancyGrid[gridX][gridZ]
-                        modifiedCells.append((gridX, gridZ, originalState))
-                        
-                        // Mark as occupied to force next search to find alternative route
-                        occupancyGrid[gridX][gridZ] = .occupied
-                    }
-                }
+                // Progressive blocking strategy - start minimal and increase as needed
+                let blockRadius = pathIndex == 0 ? 0 : min(1, pathIndex - 1)
+                print("k-paths: using block radius \(blockRadius) for path \(pathIndex + 1)")
+                blockPathInGrid(thinned, blockRadius: blockRadius)
             } else {
                 print("k-paths planning: no more paths found at iteration \(pathIndex + 1)")
                 break
             }
         }
         
-        // Restore original grid states
-        for (gridX, gridZ, originalState) in modifiedCells {
-            occupancyGrid[gridX][gridZ] = originalState
-        }
+        // Restore original grid state
+        occupancyGrid = originalGrid
+        
+        // Remove duplicate paths (paths that are too similar)
+        let uniquePaths = removeSimilarPaths(foundPaths)
         
         // Sort paths by length (shortest first)
-        let sortedPaths = foundPaths.sorted { path1, path2 in
+        let sortedPaths = uniquePaths.sorted { path1, path2 in
             calculatePathLength(path1) < calculatePathLength(path2)
         }
         
-        print("k-paths planning produced \(sortedPaths.count) paths")
+        print("k-paths planning produced \(sortedPaths.count) unique paths from \(foundPaths.count) found paths")
         for (index, path) in sortedPaths.enumerated() {
             print("  Path \(index + 1): \(path.count) waypoints, length: \(String(format: "%.2f", calculatePathLength(path)))m")
         }
         
         return sortedPaths
+    }
+    
+    /// Block a path in the occupancy grid with a specified radius using strategic partial blocking
+    private func blockPathInGrid(_ path: [SIMD3<Float>], blockRadius: Int) {
+        let pathCells = convertPathToGridCells(path)
+        
+        // Use different blocking strategies based on radius
+        if blockRadius == 0 {
+            // Only block exact path cells for first alternative
+            for (gridX, gridZ) in pathCells {
+                if gridX >= 0 && gridX < gridSize.width && gridZ >= 0 && gridZ < gridSize.height {
+                    if occupancyGrid[gridX][gridZ] == .free || occupancyGrid[gridX][gridZ] == .unknown {
+                        occupancyGrid[gridX][gridZ] = .occupied
+                    }
+                }
+            }
+        } else {
+            // Block every 3rd cell with the specified radius for subsequent alternatives
+            let blockingStep = max(3, blockRadius + 2) // Increase spacing between blocked sections
+            
+            for i in stride(from: 0, to: pathCells.count, by: blockingStep) {
+                let (gridX, gridZ) = pathCells[i]
+                
+                // Block cells in a radius around selected path cells
+                for dx in -blockRadius...blockRadius {
+                    for dz in -blockRadius...blockRadius {
+                        let blockX = gridX + dx
+                        let blockZ = gridZ + dz
+                        
+                        if blockX >= 0 && blockX < gridSize.width && blockZ >= 0 && blockZ < gridSize.height {
+                            // Only block free cells, don't overwrite actual obstacles
+                            if occupancyGrid[blockX][blockZ] == .free || occupancyGrid[blockX][blockZ] == .unknown {
+                                occupancyGrid[blockX][blockZ] = .occupied
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        print("k-paths: blocked path cells with radius \(blockRadius), using \(blockRadius == 0 ? "exact path" : "strategic partial") blocking")
+    }
+    
+    /// Remove paths that are too similar to each other
+    private func removeSimilarPaths(_ paths: [[SIMD3<Float>]]) -> [[SIMD3<Float>]] {
+        guard paths.count > 1 else { return paths }
+        
+        var uniquePaths: [[SIMD3<Float>]] = []
+        
+        for currentPath in paths {
+            var isUnique = true
+            
+            for existingPath in uniquePaths {
+                if pathsSimilar(currentPath, existingPath, threshold: 0.6) { // Reduced from 80% to 60% to allow more diversity
+                    isUnique = false
+                    break
+                }
+            }
+            
+            if isUnique {
+                uniquePaths.append(currentPath)
+            }
+        }
+        
+        return uniquePaths
+    }
+    
+    /// Check if two paths are too similar
+    private func pathsSimilar(_ path1: [SIMD3<Float>], _ path2: [SIMD3<Float>], threshold: Float) -> Bool {
+        // Convert both paths to grid cells for comparison
+        let cells1 = Set(convertPathToGridCells(path1).map { "\($0.0),\($0.1)" })
+        let cells2 = Set(convertPathToGridCells(path2).map { "\($0.0),\($0.1)" })
+        
+        let intersection = cells1.intersection(cells2)
+        let union = cells1.union(cells2)
+        
+        let similarity = Float(intersection.count) / Float(union.count)
+        return similarity > threshold
     }
     
     /// Convert a world-space path to grid cell coordinates
@@ -1510,5 +1613,250 @@ class ARManager: NSObject {
         print("=== End K-Paths Test ===")
     }
 
-    // MARK: - Existing Methods
+    // MARK: - Wall Detection Helpers
+
+    /// Update cached mesh vertices and normals for wall detection
+    private func updateMeshVertexCache(meshAnchors: [ARMeshAnchor]) {
+        let now = Date().timeIntervalSince1970
+        guard now - lastMeshUpdateTime >= meshCacheUpdateInterval else { return }
+        lastMeshUpdateTime = now
+        meshVertexCache.removeAll()
+        
+        for anchor in meshAnchors {
+            let geometry = anchor.geometry
+            let vBuffer = geometry.vertices.buffer
+            let nBuffer = geometry.normals.buffer
+            let vStride = geometry.vertices.stride
+            let nStride = geometry.normals.stride
+            let vOffset = Int(geometry.vertices.offset)
+            let nOffset = Int(geometry.normals.offset)
+            
+            // Sample every 10th vertex
+            for i in stride(from: 0, to: geometry.vertices.count, by: 10) {
+                let vPtr = vBuffer.contents().advanced(by: vOffset + i * vStride)
+                let vertex = vPtr.bindMemory(to: SIMD3<Float>.self, capacity: 1).pointee
+                let worldV4 = anchor.transform * simd_float4(vertex, 1)
+                let worldPos = SIMD3<Float>(worldV4.x, worldV4.y, worldV4.z)
+                
+                let nPtr = nBuffer.contents().advanced(by: nOffset + i * nStride)
+                let normal = nPtr.bindMemory(to: SIMD3<Float>.self, capacity: 1).pointee
+                let worldN4 = anchor.transform * simd_float4(normal, 0)
+                let worldNormal = normalize(SIMD3<Float>(worldN4.x, worldN4.y, worldN4.z))
+                
+                meshVertexCache.append((position: worldPos, normal: worldNormal))
+            }
+        }
+    }
+
+    /// Returns true if any mesh vertex near worldPos has a near-vertical normal (wall)
+    func isWall(at worldPos: SIMD3<Float>) -> Bool {
+        let threshold: Float = 0.15
+        let thresh2 = threshold * threshold
+        for entry in meshVertexCache {
+            let d2 = simd_length_squared(entry.position - worldPos)
+            if d2 <= thresh2 && abs(entry.normal.y) < 0.3 {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Samples radially around worldPos and returns distance to nearest wall
+    /// Always returns a valid distance - uses comprehensive search if initial radial search fails
+    func distanceToNearestWall(from worldPos: SIMD3<Float>, searchRadius: Float = 0.5) -> Float {
+        // First try the fast radial sampling approach
+        let directions: [SIMD3<Float>] = (0..<8).map { i in
+            let theta = Float(i) * (2 * .pi / 8)
+            return SIMD3<Float>(cos(theta), 0, sin(theta))
+        }
+        let steps = 10 // Increased from 5 for better accuracy
+        var minDist = Float.infinity
+        
+        for dir in directions {
+            for step in 1...steps {
+                let t = searchRadius * Float(step) / Float(steps)
+                let sample = worldPos + dir * t
+                if isWall(at: sample) {
+                    minDist = min(minDist, t)
+                    break
+                }
+            }
+        }
+        
+        // If no wall found in radial search, do comprehensive distance calculation
+        if minDist == Float.infinity {
+            minDist = findNearestWallDistance(from: worldPos, maxSearchRadius: searchRadius * 4)
+        }
+        
+        // Ensure we never return infinity - if still no walls found, return the max search distance
+        return minDist == Float.infinity ? searchRadius * 4 : minDist
+    }
+    
+    /// Comprehensive wall distance calculation that searches through all cached wall vertices
+    /// Returns the actual minimum distance to any wall vertex
+    private func findNearestWallDistance(from worldPos: SIMD3<Float>, maxSearchRadius: Float) -> Float {
+        var minDistance = Float.infinity
+        
+        // Check distance to all wall vertices in cache
+        for entry in meshVertexCache {
+            // Only consider vertices that are actually walls (vertical surfaces)
+            if abs(entry.normal.y) < 0.3 {
+                let distance = simd_length(entry.position - worldPos)
+                if distance <= maxSearchRadius {
+                    minDistance = min(minDistance, distance)
+                }
+            }
+        }
+        
+        // If still no walls found within max search radius, return the max search radius
+        // This ensures we never return infinity
+        return minDistance == Float.infinity ? maxSearchRadius : minDistance
+    }
+    
+    /// Visualize detected walls in the scene
+    func toggleWallVisualization() -> Bool {
+        if isWallVisualizationEnabled {
+            // Turn off wall visualization
+            clearWallVisualization()
+            isWallVisualizationEnabled = false
+            return false
+        } else {
+            // Turn on wall visualization
+            visualizeDetectedWalls()
+            isWallVisualizationEnabled = true
+            return true
+        }
+    }
+    
+    /// Clear all wall visualization
+    private func clearWallVisualization() {
+        for entity in wallVisualizationEntities {
+            arView?.scene.removeAnchor(entity)
+        }
+        wallVisualizationEntities.removeAll()
+    }
+    
+    /// Visualize walls as red wireframe or colored surfaces
+    private func visualizeDetectedWalls() {
+        guard let arView = arView else { return }
+        clearWallVisualization()
+        
+        // Create wall markers at detected wall positions
+        for (index, entry) in meshVertexCache.enumerated() {
+            // Only show every 20th wall vertex to avoid clutter
+            guard index % 20 == 0 && abs(entry.normal.y) < 0.3 else { continue }
+            
+            // Create a small red cube to mark wall positions
+            let wallMarker = ModelEntity(
+                mesh: MeshResource.generateBox(size: [0.02, 0.02, 0.02]),
+                materials: [SimpleMaterial(color: .red, roughness: 0.3, isMetallic: false)]
+            )
+            
+            let anchor = AnchorEntity(world: entry.position)
+            anchor.addChild(wallMarker)
+            arView.scene.addAnchor(anchor)
+            wallVisualizationEntities.append(anchor)
+        }
+        
+        print("Wall visualization: showing \(wallVisualizationEntities.count) wall markers")
+    }
+    
+    /// Test wall detection at the cuboid's current position
+    /// Always returns meaningful distance values
+    func testWallDetectionAtCuboid() -> (isNearWall: Bool, distance: Float) {
+        guard let cuboidPos = cuboidEntity?.position(relativeTo: nil) else {
+            // If no cuboid, return a reasonable default distance
+            return (false, 2.0) // 2 meters as default "no wall nearby" distance
+        }
+        
+        let isWall = isWall(at: cuboidPos)
+        let distance = distanceToNearestWall(from: cuboidPos)
+        
+        print("Wall detection test at cuboid position \(cuboidPos):")
+        print("  - Is wall detected: \(isWall)")
+        print("  - Distance to nearest wall: \(String(format: "%.2f", distance))m")
+        
+        return (isWall, distance)
+    }
+    
+    /// Get distances from start and end points to nearest walls
+    /// Always returns meaningful distance values (never null/infinity)
+    func getStartEndWallDistances() -> (startDistance: Float, endDistance: Float, startIsWall: Bool, endIsWall: Bool) {
+        var startDistance: Float = 2.0 // Default distance if no start point
+        var endDistance: Float = 2.0   // Default distance if no end point
+        var startIsWall = false
+        var endIsWall = false
+        
+        // Check start point
+        if let start = startPoint {
+            startDistance = distanceToNearestWall(from: start)
+            startIsWall = isWall(at: start)
+            print("Start point wall analysis:")
+            print("  - Position: \(start)")
+            print("  - Is wall detected: \(startIsWall)")
+            print("  - Distance to nearest wall: \(String(format: "%.2f", startDistance))m")
+        }
+        
+        // Check end point
+        if let goal = goalPoint {
+            endDistance = distanceToNearestWall(from: goal)
+            endIsWall = isWall(at: goal)
+            print("End point wall analysis:")
+            print("  - Position: \(goal)")
+            print("  - Is wall detected: \(endIsWall)")
+            print("  - Distance to nearest wall: \(String(format: "%.2f", endDistance))m")
+        }
+        
+        return (startDistance: startDistance, endDistance: endDistance, startIsWall: startIsWall, endIsWall: endIsWall)
+    }
+    
+    /// Get distance from any arbitrary point to nearest walls
+    /// Always returns meaningful distance values (never null/infinity)
+    func getWallDistanceFromPoint(_ point: SIMD3<Float>) -> (distance: Float, isWall: Bool) {
+        let distance = distanceToNearestWall(from: point)
+        let isWall = isWall(at: point)
+        
+        print("Wall analysis for point \(point):")
+        print("  - Is wall detected: \(isWall)")
+        print("  - Distance to nearest wall: \(String(format: "%.2f", distance))m")
+        
+        return (distance: distance, isWall: isWall)
+    }
+    
+    /// Analyze how close a path gets to walls
+    private func analyzePathWallProximity(path: [SIMD3<Float>], pathIndex: Int) {
+        var minWallDistance = Float.infinity
+        var maxWallDistance: Float = 0
+        var wallContactPoints: [SIMD3<Float>] = []
+        
+        // Sample every few waypoints to check wall proximity
+        let sampleStep = max(1, path.count / 10) // Sample ~10 points along path
+        
+        for i in stride(from: 0, to: path.count, by: sampleStep) {
+            let waypoint = path[i]
+            let wallDistance = distanceToNearestWall(from: waypoint)
+            
+            // Since distanceToNearestWall now always returns a valid distance (never infinity)
+            minWallDistance = min(minWallDistance, wallDistance)
+            maxWallDistance = max(maxWallDistance, wallDistance)
+            
+            // If very close to wall (< 20cm), mark as potential contact point
+            if wallDistance < 0.2 {
+                wallContactPoints.append(waypoint)
+            }
+        }
+        
+        // Report analysis - minWallDistance will always be valid now
+        if minWallDistance != Float.infinity {
+            print("    Wall Analysis - Min distance: \(String(format: "%.2f", minWallDistance))m, Contact points: \(wallContactPoints.count)")
+            
+            // Visual warning for paths too close to walls
+            if minWallDistance < 0.1 {
+                print("    ⚠️  WARNING: Path \(pathIndex) passes very close to walls!")
+            }
+        } else {
+            // This case should never happen now, but keep as fallback
+            print("    Wall Analysis - No walls detected near path")
+        }
+    }
 }

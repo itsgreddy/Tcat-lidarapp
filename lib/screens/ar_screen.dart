@@ -20,6 +20,10 @@ class _ARScreenState extends State<ARScreen> {
 
   // Add status message to show path planning status
   String _statusMessage = "Initialize AR to begin";
+  
+  // Wall detection state
+  bool _wallVisualizationEnabled = false;
+  String _wallDetectionStatus = "Wall detection inactive";
 
   @override
   void initState() {
@@ -60,6 +64,31 @@ class _ARScreenState extends State<ARScreen> {
     _intersectionSubscription?.cancel();
     _arService.disposeAR();
     super.dispose();
+  }
+
+  // Wall detection methods
+  Future<void> _toggleWallVisualization() async {
+    final isEnabled = await _arService.toggleWallVisualization();
+    setState(() {
+      _wallVisualizationEnabled = isEnabled;
+      _wallDetectionStatus = isEnabled 
+        ? "Wall visualization enabled - red cubes mark detected walls"
+        : "Wall visualization disabled";
+    });
+  }
+
+  Future<void> _testWallDetectionAtCurrentPosition() async {
+    final result = await _arService.testWallDetectionAtCuboid();
+    final isNearWall = result['isNearWall'] as bool? ?? false;
+    final distance = result['distance'] as double? ?? -1.0;
+    
+    setState(() {
+      if (isNearWall) {
+        _wallDetectionStatus = "Wall detected at ${distance.toStringAsFixed(2)}m from cuboid";
+      } else {
+        _wallDetectionStatus = "No wall detected near cuboid position";
+      }
+    });
   }
 
   @override
@@ -247,6 +276,62 @@ class _ARScreenState extends State<ARScreen> {
                               model.positionZ = value;
                               _arService.updateCuboidPosition(model);
                             },
+                          ),
+                        ),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Wall Detection Section
+                    Text('Wall Detection', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    
+                    // Wall detection status
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _wallVisualizationEnabled ? Colors.blue.shade50 : Colors.grey.shade100,
+                        border: Border.all(color: _wallVisualizationEnabled ? Colors.blue : Colors.grey),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _wallDetectionStatus,
+                        style: TextStyle(
+                          color: _wallVisualizationEnabled ? Colors.blue.shade800 : Colors.grey.shade700,
+                          fontSize: 13,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 12),
+                    
+                    // Wall detection buttons
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _arInitialized ? _toggleWallVisualization : null,
+                            icon: Icon(_wallVisualizationEnabled ? Icons.visibility_off : Icons.visibility),
+                            label: Text(_wallVisualizationEnabled ? 'Hide Walls' : 'Show Walls'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _wallVisualizationEnabled ? Colors.orange : Colors.blue,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _arInitialized ? _testWallDetectionAtCurrentPosition : null,
+                            icon: Icon(Icons.search),
+                            label: Text('Test Wall'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
+                            ),
                           ),
                         ),
                       ],

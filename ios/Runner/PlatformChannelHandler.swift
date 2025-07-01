@@ -84,6 +84,39 @@ class PlatformChannelHandler {
                     result(FlutterError(code: "NO_AR_MANAGER", message: "AR manager not available", details: nil))
                 }
                 
+            case "toggleWallVisualization":
+                guard let arVC = self.arViewController else {
+                    result(FlutterError(code: "NO_AR_CONTROLLER", message: "AR controller not initialized", details: nil))
+                    return
+                }
+                
+                // Access AR manager and toggle wall visualization
+                if let arManager = arVC.getARManager() {
+                    let isEnabled = arManager.toggleWallVisualization()
+                    result(isEnabled)
+                } else {
+                    result(FlutterError(code: "NO_AR_MANAGER", message: "AR manager not available", details: nil))
+                }
+                
+            case "testWallDetectionAtCuboid":
+                guard let arVC = self.arViewController else {
+                    result(FlutterError(code: "NO_AR_CONTROLLER", message: "AR controller not initialized", details: nil))
+                    return
+                }
+                
+                // Access AR manager and test wall detection
+                if let arManager = arVC.getARManager() {
+                    let wallData = arManager.testWallDetectionAtCuboid()
+                    // Ensure distance is never infinity
+                    let distance = wallData.distance == Float.infinity ? 2.0 : wallData.distance
+                    result([
+                        "isNearWall": wallData.isNearWall,
+                        "distance": distance
+                    ])
+                } else {
+                    result(FlutterError(code: "NO_AR_MANAGER", message: "AR manager not available", details: nil))
+                }
+                
             default:
                 result(FlutterMethodNotImplemented)
             }

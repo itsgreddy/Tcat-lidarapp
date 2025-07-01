@@ -103,6 +103,12 @@ class ARViewController: UIViewController {
     private var kPathsButton: UIButton?
     private var isFollowingPath = false
     
+    // Wall detection UI elements
+    private var wallVisualizationButton: UIButton?
+    private var testWallButton: UIButton?
+    private var wallStatusLabel: UILabel?
+    private var isWallVisualizationEnabled = false
+    
     // Add these new properties to store positions directly
     private var startMarkerPosition = SIMD3<Float>(0, 0, 0)
     private var goalMarkerPosition = SIMD3<Float>(0, 0, 0)
@@ -134,6 +140,7 @@ class ARViewController: UIViewController {
         setupGestures()
         setupUI()
         setupPathPlanningUI()
+        setupWallDetectionUI()
         requestCameraPermission()
     }
     
@@ -380,6 +387,69 @@ class ARViewController: UIViewController {
         editPointBtn.addTarget(self, action: #selector(toggleEditPoint), for: .touchUpInside)
         self.editPointToggleButton = editPointBtn
     }
+    
+    private func setupWallDetectionUI() {
+        // Wall status label to show detection status
+        let statusLabel = UILabel()
+        statusLabel.text = "Wall detection inactive"
+        statusLabel.font = UIFont.systemFont(ofSize: 14)
+        statusLabel.textColor = .white
+        statusLabel.backgroundColor = UIColor.black.withAlphaComponent(0.7)
+        statusLabel.textAlignment = .center
+        statusLabel.layer.cornerRadius = 8
+        statusLabel.layer.masksToBounds = true
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(statusLabel)
+        
+        NSLayoutConstraint.activate([
+            statusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -140),
+            statusLabel.widthAnchor.constraint(equalToConstant: 200),
+            statusLabel.heightAnchor.constraint(equalToConstant: 30)
+        ])
+        
+        self.wallStatusLabel = statusLabel
+        
+        // Wall visualization toggle button
+        let wallVisBtn = UIButton(type: .system)
+        wallVisBtn.setTitle("Show Walls", for: .normal)
+        wallVisBtn.backgroundColor = UIColor.systemOrange
+        wallVisBtn.setTitleColor(.white, for: .normal)
+        wallVisBtn.layer.cornerRadius = 8
+        wallVisBtn.translatesAutoresizingMaskIntoConstraints = false
+        wallVisBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 16)
+        view.addSubview(wallVisBtn)
+        
+        NSLayoutConstraint.activate([
+            wallVisBtn.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            wallVisBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            wallVisBtn.widthAnchor.constraint(equalToConstant: 110),
+            wallVisBtn.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        
+        wallVisBtn.addTarget(self, action: #selector(toggleWallVisualization), for: .touchUpInside)
+        self.wallVisualizationButton = wallVisBtn
+        
+        // Test wall detection button
+        let testWallBtn = UIButton(type: .system)
+        testWallBtn.setTitle("Test Wall", for: .normal)
+        testWallBtn.backgroundColor = UIColor.systemCyan
+        testWallBtn.setTitleColor(.white, for: .normal)
+        testWallBtn.layer.cornerRadius = 8
+        testWallBtn.translatesAutoresizingMaskIntoConstraints = false
+        testWallBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 16)
+        view.addSubview(testWallBtn)
+        
+        NSLayoutConstraint.activate([
+            testWallBtn.topAnchor.constraint(equalTo: wallVisBtn.bottomAnchor, constant: 8),
+            testWallBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            testWallBtn.widthAnchor.constraint(equalToConstant: 110),
+            testWallBtn.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        
+        testWallBtn.addTarget(self, action: #selector(testWallDetection), for: .touchUpInside)
+        self.testWallButton = testWallBtn
+    }
 
     private func labeledSlider(_ label: String, _ slider: UISlider) -> UIView {
         let lbl = UILabel()
@@ -513,6 +583,55 @@ class ARViewController: UIViewController {
                 posZSlider.value = goalPos.z
             }
         }
+    }
+    
+    @objc private func toggleWallVisualization(_ sender: UIButton) {
+        isWallVisualizationEnabled = !isWallVisualizationEnabled
+        
+        // Call the wall visualization toggle on ARManager
+        arManager.toggleWallVisualization()
+        
+        // Update button appearance
+        if isWallVisualizationEnabled {
+            sender.setTitle("Hide Walls", for: .normal)
+            sender.backgroundColor = UIColor.systemRed
+            wallStatusLabel?.text = "Wall visualization ON"
+            wallStatusLabel?.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.7)
+        } else {
+            sender.setTitle("Show Walls", for: .normal)
+            sender.backgroundColor = UIColor.systemOrange
+            wallStatusLabel?.text = "Wall visualization OFF"
+            wallStatusLabel?.backgroundColor = UIColor.black.withAlphaComponent(0.7)
+        }
+    }
+    
+    @objc private func testWallDetection(_ sender: UIButton) {
+        // Get the current cuboid position for testing
+        guard let cuboidEntity = arManager.currentCuboidEntity else {
+            wallStatusLabel?.text = "No cuboid to test"
+            return
+        }
+        
+        let cuboidPosition = cuboidEntity.position(relativeTo: nil)
+        
+        // Test wall detection at cuboid position
+        let isNearWall = arManager.isWall(at: cuboidPosition)
+        let distanceToWall = arManager.distanceToNearestWall(from: cuboidPosition, searchRadius: 0.5)
+        
+        // Update status label with results
+        if isNearWall {
+            wallStatusLabel?.text = "WALL DETECTED at cuboid!"
+            wallStatusLabel?.backgroundColor = UIColor.systemRed.withAlphaComponent(0.7)
+        } else {
+            let distanceText = distanceToWall > 0 ? String(format: "%.2fm", distanceToWall) : "N/A"
+            wallStatusLabel?.text = "No wall. Distance: \(distanceText)"
+            wallStatusLabel?.backgroundColor = UIColor.systemGreen.withAlphaComponent(0.7)
+        }
+        
+        // Also test wall detection at the cuboid position using ARManager method
+        arManager.testWallDetectionAtCuboid()
+        
+        print("Wall test: isNearWall=\(isNearWall), distance=\(distanceToWall)")
     }
 
     private func requestCameraPermission() {
